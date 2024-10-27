@@ -1,177 +1,397 @@
+import json
+import boto3
+import os
+from datetime import datetime
+from typing import Dict, List, Optional
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-import time
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from dataclasses import dataclass, field
+from tempfile import mkdtemp
+import time
+import logging
 
-url = 'https://dining.columbia.edu/'
-driver = webdriver.Chrome()  # Make sure you have ChromeDriver installed and in your PATH
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
-# # Step 2: Use Selenium to fetch the HTML content from the URL
-# driver.get(url)
+# Initialize AWS clients
+dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+ses = boto3.client('ses', region_name='us-east-2')
+users_table = dynamodb.Table('users')
 
-# # Optional: Wait for the page to load completely
-# time.sleep(5)  # Adjust the sleep time as needed
+@dataclass
+class MenuItem:
+    title: str
+    allergens: List[str]
+    is_vegetarian: bool = False
+    is_vegan: bool = False
+    is_halal: bool = False
 
-# # Step 3: Find the relevant div containing the dining data
-# dining_section = driver.find_element(By.ID, "cu_dining_open_now-19925")
+@dataclass
+class DiningLocation:
+    name: str
+    url: str
+    menus: Dict[str, Dict[str, Dict[str, MenuItem]]]
+    open_today: bool = False
+    open_times: str = ""
 
+def initialize_driver():
+    """Set up Chrome for Lambda environment"""
+    chrome_options = ChromeOptions()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-dev-tools")
+    chrome_options.add_argument("--no-zygote")
+    chrome_options.add_argument("--single-process")
+    chrome_options.add_argument(f"--user-data-dir={mkdtemp()}")
+    chrome_options.add_argument(f"--data-path={mkdtemp()}")
+    chrome_options.add_argument(f"--disk-cache-dir={mkdtemp()}")
+    chrome_options.add_argument("--remote-debugging-pipe")
+    chrome_options.add_argument("--verbose")
+    chrome_options.add_argument("--log-path=/tmp/chromedriver.log")
+    chrome_options.binary_location = "/opt/chrome/chrome-linux64/chrome"
 
-# locations = dining_section.find_elements(By.CSS_SELECTOR, '.col-md-6.p-0')
-# open_times = dining_section.find_elements(By.CSS_SELECTOR, '.open-time')
-# is_opens=dining_section.find_elements(By.CSS_SELECTOR, '.status')
-
-# locations_map={}
-# for location, open_time, is_open in zip(locations, open_times, is_opens):
-#     print(location.text) #name of the location
-#     locations_map[location.text]=True if is_open.text=='OPEN' else False
-#     print(open_time.text) #times that hte location is open: 12:00 PM - 10:00AM, 7:30 AM - 8:00 PM
-#     print(is_open.text) #either OPEN or CLOSED
-
-
-menus_db= {} #LOCATION : {station: {meal_item: [allergens]}}
-
-
-# JOHN JAY
-locations_map={'John Jay Dining Hall':False, "JJ's Place":True}
-
-if locations_map['John Jay Dining Hall']:
-    try:
-        new_url = 'https://dining.columbia.edu/content/john-jay-dining-hall'
-        driver.get(new_url)
-        menus = driver.find_element(By.ID, 'cu-dining-meals')
-        button = driver.find_element(By.XPATH, "//button[text()='All']")
-        button.click()
-        #find all divs that contain meal items
-        parent_divs = driver.find_elements(By.XPATH, ".//div[div[contains(@class, 'meal-items')]]")
-        with open('dining.txt', 'w') as f:
-            for parent_div in parent_divs:
-                f.write(parent_div.get_attribute('outerHTML'))
-                f.write('\n')
-        for parent_div in parent_divs:
-
-            #each of these divs 
-            station_title = parent_div.find_element(By.CSS_SELECTOR, '.station-title')
-            print('STATION', station_title.text)
-            meal_items=parent_div.find_elements(By.CSS_SELECTOR, '.meal-item')
-            for meal_item in meal_items:
-                title = meal_item.find_element(By.CSS_SELECTOR, '.meal-title')
-                # print(title.text)
-            print('\n')
-            menus_db[station_title.text]=[meal_item.text for meal_item in meal_items]
-        
-        #ADDING TO OUR FAKE DATABASE
-        
-
-    except Exception as e:
-        #case: ALL button can't be found
-        print('Could not find the button')
-        print(e)
-
-
-#JJ'S PLACE
-
-# Dismiss any overlays (e.g., Privacy Notice)
-try:
-    privacy_notice = WebDriverWait(driver, 5).until(
-        EC.presence_of_element_located((By.ID, "cu-privacy-notice"))
+    service = Service(
+        executable_path="/opt/chrome-driver/chromedriver-linux64/chromedriver",
+        service_log_path="/tmp/chromedriver.log"
     )
-    if privacy_notice.is_displayed():
-        driver.find_element(By.ID, "close-privacy-notice").click()
-except Exception:
-    print("No privacy notice found, or unable to close it.")
 
+    return webdriver.Chrome(
+        service=service,
+        options=chrome_options
+    )
 
-# Check for and close any overlay if it exists
-def close_overlay():
-    try:
-        overlay = WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.ID, "cu-privacy-notice"))
-        )
-        close_button = driver.find_element(By.ID, "close-privacy-notice")
-        driver.execute_script("arguments[0].click();", close_button)  # Click using JavaScript
-        print("Overlay closed.")
-    except Exception:
-        print("No overlay found.")
+class ColumbiaDiningScraper:
+    BASE_URL = 'https://dining.columbia.edu/'
+    TIMEOUT = 10
 
-# Main function to select menu tabs and retrieve data
-if locations_map["JJ's Place"]:
-    menus_db["JJ's Place"] = {'Breakfast': {}, 'Daily': {}, 'Late Night': {}}
-    try:
-        new_url = 'https://dining.columbia.edu/content/jjs-place-0'
-        driver.get(new_url)
-        
-        # Attempt to close any overlay that may block the view
-        close_overlay()
-        
-        # Find the menu tabs container
-        menu_tabs = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, '.cu-dining-menu-tabs'))
-        )
-        
-        # Loop through each meal type
-        for meal_type in ['Breakfast', 'Daily', 'Late Night']:
-            button = None
-            for attempt in range(3):  # Retry mechanism for each button
+    def __init__(self):
+        self.driver = initialize_driver()
+        self.locations: Dict[str, DiningLocation] = self._initialize_locations()
+
+    def _initialize_locations(self) -> Dict[str, DiningLocation]:
+        """Initialize the dining locations dictionary with known locations and their available menus."""
+        return {
+            'John Jay Dining Hall': DiningLocation(
+                name='John Jay Dining Hall',
+                url='https://dining.columbia.edu/content/john-jay-dining-hall',
+                menus={
+                    'Breakfast': {},
+                    'Lunch': {},
+                    'Dinner': {},
+                    'Lunch & Dinner': {}
+                }
+            ),
+            "JJ's Place": DiningLocation(
+                name="JJ's Place",
+                url='https://dining.columbia.edu/content/jjs-place-0',
+                menus={
+                    'All': {},
+                    'Daily': {},
+                    'Late Night': {},
+                    'Breakfast': {}
+                }
+            ),
+            'Ferris Booth Commons': DiningLocation(
+                name='Ferris Booth Commons',
+                url='https://dining.columbia.edu/content/ferris-booth-commons-0',
+                menus={
+                    'Breakfast': {},
+                    'Lunch': {},
+                    'Dinner': {},
+                    'Lunch & Dinner': {}
+                }
+            ),
+            'Faculty House': DiningLocation(
+                name='Faculty House',
+                url='https://dining.columbia.edu/content/faculty-house-0',
+                menus={
+                    'Lunch': {}
+                }
+            ),
+            'The Fac Shack': DiningLocation(
+                name="The Fac Shack",
+                url='https://dining.columbia.edu/content/fac-shack',
+                menus={
+                    'Dinner': {}
+                }
+            )
+            # Note: Removed locations without menus for efficiency
+        }
+
+    def _wait_and_find_element(self, by: By, value: str, timeout: int = TIMEOUT):
+        """Wait for and return an element."""
+        try:
+            return WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_element_located((by, value))
+            )
+        except TimeoutException:
+            logger.warning(f"Timeout waiting for element: {value}")
+            return None
+
+    def _close_overlay(self):
+        """Close privacy notice overlay if present."""
+        try:
+            close_button = self._wait_and_find_element(By.ID, "close-privacy-notice", timeout=5)
+            if close_button:
+                self.driver.execute_script("arguments[0].click();", close_button)
+        except Exception as e:
+            logger.debug(f"No overlay to close: {e}")
+
+    def scrape_locations(self):
+        """Scrape all dining locations and their menus."""
+        try:
+            logger.info("Starting to scrape locations")
+            self.driver.get(self.BASE_URL)
+            self._close_overlay()
+
+            # Find all dining locations
+            locations = self.driver.find_elements(
+                By.CSS_SELECTOR, 
+                '.location.dining-location, .location.retail-location'
+            )
+            logger.info(f"Found {len(locations)} locations")
+
+            # Update location status
+            for loc in locations:
                 try:
-                    # Locate button by text and class
-                    button = WebDriverWait(menu_tabs, 10).until(
-                        EC.element_to_be_clickable((By.XPATH, f"//button[text()='{meal_type}' and contains(@class, 'ng-binding')]"))
+                    title = loc.find_element(By.CSS_SELECTOR, '.name a').text.strip()
+                    if title in self.locations:
+                        open_times = loc.find_element(By.CSS_SELECTOR, '.open-time').text
+                        self.locations[title].open_today = bool(open_times)
+                        self.locations[title].open_times = open_times
+                        logger.info(f"Location {title} is {'open' if open_times else 'closed'}")
+                except NoSuchElementException:
+                    continue
+
+            # Scrape menus for open locations
+            for location in self.locations.values():
+                if location.open_today:
+                    self._scrape_location_menu(location)
+
+        except Exception as e:
+            logger.error(f"Error during scraping: {e}")
+            raise
+        finally:
+            if self.driver:
+                self.driver.quit()
+
+    def _scrape_location_menu(self, location: DiningLocation):
+        """Scrape menu for a specific location."""
+        logger.info(f"Scraping menu for {location.name}")
+        self.driver.get(location.url)
+        self._close_overlay()
+
+        try:
+            menu_tabs = self._wait_and_find_element(By.CSS_SELECTOR, '.cu-dining-menu-tabs')
+            if not menu_tabs:
+                return
+
+            for meal_type in location.menus.keys():
+                try:
+                    button = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable(
+                            (By.XPATH, f"//button[text()='{meal_type}' and contains(@class, 'ng-binding')]")
+                        )
                     )
-                    
-                    # Scroll into view and click using JavaScript to avoid click interception
-                    driver.execute_script("arguments[0].scrollIntoView(true);", button)
-                    driver.execute_script("arguments[0].click();", button)  # Click via JavaScript
-                    print(f"Clicked '{meal_type}' tab.")
-                    time.sleep(1)  # Allow time for content to load after clicking
-                    break  # Exit retry loop on successful click
-                except Exception as e:
-                    print(f"Attempt {attempt + 1} failed for meal type '{meal_type}': {e}")
-                    time.sleep(2)  # Wait before retrying
-            else:
-                print(f"Could not click button for meal type '{meal_type}'. Moving to next meal type.")
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
+                    self.driver.execute_script("arguments[0].click();", button)
+                    time.sleep(1)
+
+                    stations = self.driver.find_elements(By.XPATH, ".//div[div[contains(@class, 'meal-items')]]")
+                    for station in stations:
+                        station_name = station.find_element(By.CSS_SELECTOR, '.station-title').text
+                        if station_name not in location.menus[meal_type]:
+                            location.menus[meal_type][station_name] = {}
+
+                        meal_items = station.find_elements(By.CSS_SELECTOR, '.meal-item')
+                        for meal_item in meal_items:
+                            menu_item = self._parse_menu_item(meal_item)
+                            location.menus[meal_type][station_name][menu_item.title] = menu_item
+
+                except TimeoutException:
+                    logger.debug(f"No {meal_type} menu found for {location.name}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error scraping menu for {location.name}: {e}")
+
+    def _parse_menu_item(self, meal_item) -> MenuItem:
+        """Parse a menu item element and return MenuItem object."""
+        title = meal_item.find_element(By.CSS_SELECTOR, '.meal-title').text
+
+        # Parse dietary information
+        dietary_info = {'is_vegetarian': False, 'is_vegan': False, 'is_halal': False}
+        try:
+            dietary_text = meal_item.find_element(By.CSS_SELECTOR, 'div.meal-prefs strong').text
+            dietary_info = {
+                'is_vegetarian': "Vegetarian" in dietary_text or "Vegan" in dietary_text,
+                'is_vegan': "Vegan" in dietary_text,
+                'is_halal': "Halal" in dietary_text
+            }
+        except NoSuchElementException:
+            pass
+
+        # Parse allergens
+        allergens = []
+        try:
+            allergens_text = meal_item.find_element(By.TAG_NAME, 'em').text
+            if "Contains: " in allergens_text:
+                allergens = allergens_text.split("Contains: ")[1].split(", ")
+        except NoSuchElementException:
+            pass
+
+        return MenuItem(
+            title=title,
+            allergens=allergens,
+            **dietary_info
+        )
+
+    def format_menu_for_user(self, user: Dict, locations: Dict[str, DiningLocation]) -> List[Dict]:
+        """Format menu data according to user preferences."""
+        formatted_locations = []
+        
+        for location_name, location in locations.items():
+            if not location.open_today:
                 continue
-            
-            # Retrieve and process data for each station under the meal type
-            parent_divs = driver.find_elements(By.XPATH, ".//div[div[contains(@class, 'meal-items')]]")
-            for parent_div in parent_divs:
-                station_title = parent_div.find_element(By.CSS_SELECTOR, '.station-title')
-                menus_db["JJ's Place"][meal_type][station_title.text] = menus_db["JJ's Place"][meal_type].get(station_title.text, {})
-                
-                meal_items = parent_div.find_elements(By.CSS_SELECTOR, '.meal-item')
-                for meal_item in meal_items:
-                    title = meal_item.find_element(By.CSS_SELECTOR, '.meal-title').text
-                    
-                    # Check dietary information
-                    is_vegetarian = is_vegan = is_halal = False
-                    try:
-                        dietary_text = meal_item.find_element(By.CSS_SELECTOR, 'div.meal-prefs strong').text
-                        is_vegetarian = "Vegetarian" in dietary_text
-                        is_halal = "Halal" in dietary_text
-                        is_vegan = "Vegan" in dietary_text
-                    except Exception:
-                        pass
 
-                    # Get allergens
-                    try:
-                        allergens = meal_item.find_element(By.TAG_NAME, 'em').text
-                        allergens = allergens.split("Contains: ")[1].split(", ")
-                    except Exception:
-                        allergens = []
+            location_data = {
+                "name": location_name,
+                "open_times": location.open_times,
+                "meals": []
+            }
 
-                    # Store data in the menu database
-                    menus_db["JJ's Place"][meal_type][station_title.text][title] = {
-                        "allergens": allergens,
-                        "vegetarian": is_vegetarian or is_vegan,
-                        "vegan": is_vegan,
-                        'halal': is_halal
+            for meal_type, stations in location.menus.items():
+                if not stations:
+                    continue
+
+                meal_data = {
+                    "meal_type": meal_type,
+                    "stations": []
+                }
+
+                for station_name, items in stations.items():
+                    station_data = {
+                        "station_name": station_name,
+                        "items": []
                     }
-                    print(f"{title}: Vegetarian - {is_vegetarian}, Vegan - {is_vegan}, Halal - {is_halal}, Allergens - {allergens}")
-                print('\n')
+
+                    for item_name, item in items.items():
+                        # Check dietary preferences
+                        if user.get('is_vegetarian') and not item.is_vegetarian:
+                            continue
+                        if user.get('is_vegan') and not item.is_vegan:
+                            continue
+                        if user.get('is_halal') and not item.is_halal:
+                            continue
+
+                        # Check allergens
+                        skip_item = False
+                        for unavailable in user.get('unavailable_foods', []):
+                            if any(allergen.lower() == unavailable.lower() for allergen in item.allergens):
+                                skip_item = True
+                                break
+                        if skip_item:
+                            continue
+
+                        # Format dietary information
+                        dietary = []
+                        if item.is_vegan:
+                            dietary.append("Vegan")
+                        elif item.is_vegetarian:
+                            dietary.append("Vegetarian")
+                        if item.is_halal:
+                            dietary.append("Halal")
+
+                        station_data["items"].append({
+                            "name": item_name,
+                            "dietary": ", ".join(dietary) if dietary else None,
+                            "allergens": ", ".join(item.allergens) if item.allergens else None
+                        })
+
+                    if station_data["items"]:
+                        meal_data["stations"].append(station_data)
+
+                if meal_data["stations"]:
+                    location_data["meals"].append(meal_data)
+
+            if location_data["meals"]:
+                formatted_locations.append(location_data)
+
+        return formatted_locations
+
+    def send_email(self, user_email: str, formatted_menu: List[Dict]):
+        """Send formatted menu to user via SES."""
+        try:
+            template_data = {
+                "date": datetime.now().strftime("%A, %B %d, %Y"),
+                "locations": formatted_menu
+            }
+
+            response = ses.send_templated_email(
+                Source='churlee12@gmail.com',  # Make sure this email is verified in SES
+                Destination={
+                    'ToAddresses': [user_email]
+                },
+                Template='ColumbiaDiningMenuUpdate',
+                TemplateData=json.dumps(template_data)
+            )
+            logger.info(f"Email sent successfully to {user_email}")
+            return response
+        except Exception as e:
+            logger.error(f"Error sending email to {user_email}: {e}")
+            raise
+
+
+def lambda_handler(event, context):
+    logger.info("Starting Lambda execution")
+    try:
+        # Initialize scraper
+        scraper = ColumbiaDiningScraper()
+        
+        # Scrape all locations
+        scraper.scrape_locations()
+        
+        # Get all users from DynamoDB
+        response = users_table.scan()
+        users = response['Items']
+        logger.info(f"Found {len(users)} users")
+        
+        # Process menu for each user and send email
+        for user in users:
+            formatted_menu = scraper.format_menu_for_user(user, scraper.locations)
+            if formatted_menu:  # Only send email if there are matching menu items
+                scraper.send_email(user['email'], formatted_menu)
+        
+        return {
+            'statusCode': 200,
+            'body': json.dumps('Emails sent successfully')
+        }
+        
     except Exception as e:
-        print("Menu not available")
-        print(e)
+        logger.error(f"Error in lambda execution: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f'Error: {str(e)}')
+        }
     
 
-# Step 6: Close the WebDriver
-driver.quit()
+    """
+    REBUILDING DOCKER AND PUSHING TO LAMBDA
+docker build -t cu-dining-lambda:latest . && \
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) && \
+docker tag cu-dining-lambda:latest ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com/cu-dining-lambda:latest && \
+aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com && \
+docker push ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com/cu-dining-lambda:latest && \
+aws lambda update-function-code \
+    --function-name cu_dining_emailer \
+    --image-uri ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com/cu-dining-lambda:latest
+    
+    """
