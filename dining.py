@@ -383,15 +383,3 @@ def lambda_handler(event, context):
         }
     
 
-    """
-    REBUILDING DOCKER AND PUSHING TO LAMBDA
-docker build -t cu-dining-lambda:latest . && \
-export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) && \
-docker tag cu-dining-lambda:latest ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com/cu-dining-lambda:latest && \
-aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com && \
-docker push ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com/cu-dining-lambda:latest && \
-aws lambda update-function-code \
-    --function-name cu_dining_emailer \
-    --image-uri ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-2.amazonaws.com/cu-dining-lambda:latest
-    
-    """
