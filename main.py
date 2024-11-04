@@ -139,13 +139,45 @@ def initialize_driver():
     print("Chrome binary path:", options.binary_location)
     print("ChromeDriver path:", service.path)
 
-    try:
+    def create_driver():
         driver = webdriver.Chrome(options=options, service=service)
-        print("Chrome browser started")
+        
+        # Execute CDP commands to modify browser characteristics
+        driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+            "userAgent": user_agent,
+            "platform": "Windows",  # Changed to Windows for better acceptance
+            "acceptLanguage": "en-US,en;q=0.9"
+        })
+        
+        # Additional CDP commands for stealth
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+            """
+        })
+        
         return driver
-    except Exception as e:
-        print(f"Chrome initialization error: {str(e)}")
-        raise
+
+    # Try to create driver with retries
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            driver = create_driver()
+            print(f"Chrome started successfully on attempt {attempt + 1}")
+            return driver
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+            else:
+                raise Exception(f"Failed to start Chrome after {max_retries} attempts: {str(e)}")
+
+
+
+
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
     TIMEOUT = 10
