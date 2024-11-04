@@ -18,9 +18,60 @@ import random
 import os 
 import subprocess
 import socket
+import requests
+from typing import Optional, List
+import random
 import resource
 
 
+class ProxyRotator:
+    def __init__(self):
+        # List of free proxies (you should replace these with paid/reliable proxies)
+        self.proxies = []
+        self.last_update = 0
+        self.update_interval = 300  # 5 minutes
+    
+    def _update_proxy_list(self):
+        """Update the proxy list from various sources."""
+        try:
+            # Free proxy list (replace with your paid proxy service)
+            response = requests.get('https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt')
+            if response.status_code == 200:
+                self.proxies = [line.strip() for line in response.text.split('\n') if line.strip()]
+            
+            # You can add more proxy sources here
+            self.last_update = time.time()
+            print(f"Updated proxy list, got {len(self.proxies)} proxies")
+            
+        except Exception as e:
+            print(f"Error updating proxy list: {e}")
+    
+    def _test_proxy(self, proxy: str, timeout: int = 5) -> bool:
+        """Test if a proxy is working."""
+        try:
+            test_url = 'https://www.google.com'
+            proxies = {
+                'http': f'http://{proxy}',
+                'https': f'http://{proxy}'
+            }
+            response = requests.get(test_url, proxies=proxies, timeout=timeout)
+            return response.status_code == 200
+        except:
+            return False
+    
+    def get_working_proxy(self) -> Optional[str]:
+        """Get a working proxy from the list."""
+        if time.time() - self.last_update > self.update_interval:
+            self._update_proxy_list()
+            
+        # Shuffle proxies to avoid using the same ones
+        random.shuffle(self.proxies)
+        
+        # Try proxies until we find a working one
+        for proxy in self.proxies[:10]:  # Try up to 10 proxies
+            if self._test_proxy(proxy):
+                return proxy
+        return None
 
 
 # Set up logging
@@ -49,122 +100,52 @@ class DiningLocation:
     open_today: bool = False
     open_times: str = ""
 
-
 def initialize_driver():
     print('Initializing driver')
     options = webdriver.ChromeOptions()
+
+    # Local Configuration - modify these paths based on your OS
+    if os.name == 'posix':  # Mac/Linux
+        service = Service('/opt/homebrew/bin/chromedriver')  # Mac with Homebrew
+        options.binary_location = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    else:  # Windows
+        service = Service('C:\\Program Files\\chromedriver.exe')  # Adjust path as needed
+        options.binary_location = 'C:\\Program Files\\Google Chrome\\Application\\chrome.exe'
 
     # EC2 Configuration
     service = Service("/usr/local/bin/chromedriver")
     options.binary_location = '/usr/bin/google-chrome-stable'
     
-    # Enhanced browser configuration
+    # Enhanced browser configuration with proxy-friendly settings
     user_agent = random.choice([
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ])
-    options.add_argument(f'user-agent={user_agent}')
     
-    # Memory and performance optimizations
+    
+    options.add_argument(f'user-agent={user_agent}')
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-browser-side-navigation')
-    options.add_argument('--disable-features=VizDisplayCompositor')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--disable-infobars')
-    options.add_argument('--window-size=1280,720')  # Reduced window size
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-dev-shm-usage")
     options.add_argument('--disable-blink-features=AutomationControlled')
-    
-    # Memory management
-    options.add_argument('--single-process')  # Use single process
-    options.add_argument('--disable-application-cache')
-    options.add_argument('--disable-dev-tools')
-    options.add_argument('--aggressive-cache-discard')
-    options.add_argument('--disable-cache')
-    options.add_argument('--disable-offline-load-stale-cache')
-    options.add_argument('--disk-cache-size=0')
-    options.add_argument('--media-cache-size=0')
-    
-    # Set specific timeout values
-    options.add_argument('--dns-prefetch-disable')
-    options.page_load_strategy = 'eager'  # Changed from 'normal' to 'eager'
-    
-    # Temporary directories with cleanup
-    temp_dir = mkdtemp()
-    options.add_argument(f'--user-data-dir={temp_dir}')
-    options.add_argument(f'--crash-dumps-dir={temp_dir}')
-    options.add_argument(f'--disk-cache-dir={temp_dir}')
     
     # Add experimental options
     options.add_experimental_option('excludeSwitches', ['enable-automation'])
     options.add_experimental_option('useAutomationExtension', False)
-    
-    # Additional performance settings
-    prefs = {
-        'profile.default_content_setting_values': {
-            'images': 2,  # Disable images
-            'plugins': 2,  # Disable plugins
-            'popups': 2,  # Disable popups
-            'geolocation': 2,  # Disable geolocation
-            'notifications': 2  # Disable notifications
-        },
-        'disk-cache-size': 4096,
-        'profile.managed_default_content_settings': {
-            'javascript': 1  # Enable JavaScript
-        }
-    }
-    options.add_experimental_option('prefs', prefs)
 
+    # Debug information
     print("Chrome binary path:", options.binary_location)
     print("ChromeDriver path:", service.path)
 
-    def create_driver():
+    try:
         driver = webdriver.Chrome(options=options, service=service)
-        
-        # Set shorter timeouts
-        driver.set_script_timeout(20)
-        driver.set_page_load_timeout(30)
-        
-        # Execute CDP commands
-        driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-            "userAgent": user_agent,
-            "platform": "Linux x86_64"
-        })
-        
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
-                });
-            """
-        })
-        
+        print("Chrome browser started")
         return driver
-
-    # Try to create driver with retries
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            driver = create_driver()
-            print(f"Chrome started successfully on attempt {attempt + 1}")
-            print(f"Chrome version: {driver.capabilities['browserVersion']}")
-            print(f"ChromeDriver version: {driver.capabilities['chrome']['chromedriverVersion']}")
-            return driver
-        except Exception as e:
-            print(f"Attempt {attempt + 1} failed: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                raise Exception(f"Failed to start Chrome after {max_retries} attempts: {str(e)}")
-
-
+    except Exception as e:
+        print(f"Chrome initialization error: {str(e)}")
+        raise
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
     TIMEOUT = 10
@@ -644,13 +625,6 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"DNS resolution failed: {e}")
     
-    try:
-        chrome_path = subprocess.check_output("find /opt /usr -name chrome", shell=True).decode()
-        chromedriver_path = subprocess.check_output("find /opt /usr -name chromedriver", shell=True).decode()
-        logger.info(f"Chrome path:\n{chrome_path}")
-        logger.info(f"Chromedriver path:\n{chromedriver_path}")
-    except Exception as e:
-        print(f"Error finding Chrome or Chromedriver: {e}")
     successful_sends=[]
     try:
         
