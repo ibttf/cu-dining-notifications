@@ -439,169 +439,245 @@ class ColumbiaDiningScraper:
     def _scrape_location_menu(self, location: DiningLocation):
         """Scrape menu for a specific location."""
         print(f"Scraping menu for {location.name}")
-        self.driver.get(location.url)
+        
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                print(f"\nAttempt {retry_count + 1} of {max_retries} for {location.name}")
+                self.driver.get(location.url)
+                
+                # Initial wait
+                print("Waiting for menu page to load...")
+                time.sleep(random.uniform(5, 8))
+                
+                print(f"Current title: {self.driver.title}")
+                
+                # Check if we're on the Cloudflare page
+                if "Just a moment" in self.driver.title:
+                    print("Detected Cloudflare challenge page on menu")
+                    # Wait longer for Cloudflare challenge to complete
+                    time.sleep(random.uniform(10, 15))
+                
+                # Try to find menu tabs with increased timeout
+                try:
+                    menu_tabs = WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '.cu-dining-menu-tabs'))
+                    )
+                    print("Menu tabs found")
+                    break
+                except TimeoutException:
+                    print("Timeout waiting for menu tabs")
+                    print("Current page source preview:", self.driver.page_source[:200])
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        time.sleep(random.uniform(3, 5))
+                        continue
+                    return  # Skip this location if we can't load its menu
+                    
+            except Exception as e:
+                print(f"Error during menu attempt {retry_count + 1}: {str(e)}")
+                retry_count += 1
+                if retry_count < max_retries:
+                    time.sleep(random.uniform(3, 5))
+                    continue
+                return  # Skip this location if we can't load it
 
         try:
-            menu_tabs = self._wait_and_find_element(By.CSS_SELECTOR, '.cu-dining-menu-tabs')
-            if not menu_tabs:
-                return
-
             for meal_type in location.menus.keys():
                 try:
-                    button = WebDriverWait(self.driver, 5).until(
-                        EC.element_to_be_clickable(
-                            (By.XPATH, f"//button[text()='{meal_type}' and contains(@class, 'ng-binding')]")
+                    # Wait for meal type button with retry
+                    button_retry = 0
+                    while button_retry < 3:
+                        try:
+                            button = WebDriverWait(self.driver, 10).until(
+                                EC.element_to_be_clickable(
+                                    (By.XPATH, f"//button[text()='{meal_type}' and contains(@class, 'ng-binding')]")
+                                )
+                            )
+                            print(f"Found button for {meal_type}")
+                            break
+                        except TimeoutException:
+                            button_retry += 1
+                            if button_retry < 3:
+                                print(f"Retrying button find for {meal_type}")
+                                time.sleep(random.uniform(2, 4))
+                                continue
+                            print(f"No button found for {meal_type} after retries")
+                            raise
+                    
+                    # Scroll and click with random delay
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
+                    time.sleep(random.uniform(1, 2))
+                    self.driver.execute_script("arguments[0].click();", button)
+                    time.sleep(random.uniform(2, 3))
+
+                    # Find all stations
+                    stations = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_all_elements_located(
+                            (By.XPATH, ".//div[div[contains(@class, 'meal-items')]]")
                         )
                     )
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
-                    self.driver.execute_script("arguments[0].click();", button)
-                    time.sleep(1)
-
-                    stations = self.driver.find_elements(By.XPATH, ".//div[div[contains(@class, 'meal-items')]]")
+                    
                     for station in stations:
-                        station_name = station.find_element(By.CSS_SELECTOR, '.station-title').text
-                        if station_name not in location.menus[meal_type]:
-                            location.menus[meal_type][station_name] = {}
+                        try:
+                            station_name = station.find_element(By.CSS_SELECTOR, '.station-title').text
+                            if station_name not in location.menus[meal_type]:
+                                location.menus[meal_type][station_name] = {}
 
-                        meal_items = station.find_elements(By.CSS_SELECTOR, '.meal-item')
-                        for meal_item in meal_items:
-                            menu_item = self._parse_menu_item(meal_item)
-                            location.menus[meal_type][station_name][menu_item.title] = menu_item
+                            meal_items = station.find_elements(By.CSS_SELECTOR, '.meal-item')
+                            for meal_item in meal_items:
+                                menu_item = self._parse_menu_item(meal_item)
+                                location.menus[meal_type][station_name][menu_item.title] = menu_item
+                                
+                            print(f"Processed {len(meal_items)} items for {station_name}")
+                                
+                        except NoSuchElementException as e:
+                            print(f"Error processing station in {meal_type}: {e}")
+                            continue
 
                 except TimeoutException:
-                    logger.debug(f"No {meal_type} menu found for {location.name}")
+                    print(f"No {meal_type} menu found for {location.name}")
+                    continue
+                except Exception as e:
+                    print(f"Error processing {meal_type} for {location.name}: {e}")
                     continue
 
         except Exception as e:
             print(f"Error scraping menu for {location.name}: {e}")
+            print("Current URL:", self.driver.current_url)
+            print("Page source:", self.driver.page_source[:200])
 
-    def _parse_menu_item(self, meal_item) -> MenuItem:
-        """Parse a menu item element and return MenuItem object."""
-        title = meal_item.find_element(By.CSS_SELECTOR, '.meal-title').text
 
-        # Parse dietary information
-        dietary_info = {'is_vegetarian': False, 'is_vegan': False, 'is_halal': False}
-        try:
-            dietary_text = meal_item.find_element(By.CSS_SELECTOR, 'div.meal-prefs strong').text
-            dietary_info = {
-                'is_vegetarian': "Vegetarian" in dietary_text or "Vegan" in dietary_text,
-                'is_vegan': "Vegan" in dietary_text,
-                'is_halal': "Halal" in dietary_text
-            }
-        except NoSuchElementException:
-            pass
 
-        # Parse allergens
-        allergens = []
-        try:
-            allergens_text = meal_item.find_element(By.TAG_NAME, 'em').text
-            if "Contains: " in allergens_text:
-                allergens = allergens_text.split("Contains: ")[1].split(", ")
-        except NoSuchElementException:
-            pass
+        def _parse_menu_item(self, meal_item) -> MenuItem:
+            """Parse a menu item element and return MenuItem object."""
+            title = meal_item.find_element(By.CSS_SELECTOR, '.meal-title').text
 
-        return MenuItem(
-            title=title,
-            allergens=allergens,
-            **dietary_info
-        )
+            # Parse dietary information
+            dietary_info = {'is_vegetarian': False, 'is_vegan': False, 'is_halal': False}
+            try:
+                dietary_text = meal_item.find_element(By.CSS_SELECTOR, 'div.meal-prefs strong').text
+                dietary_info = {
+                    'is_vegetarian': "Vegetarian" in dietary_text or "Vegan" in dietary_text,
+                    'is_vegan': "Vegan" in dietary_text,
+                    'is_halal': "Halal" in dietary_text
+                }
+            except NoSuchElementException:
+                pass
 
-    def format_menu_for_user(self, user: Dict, locations: Dict[str, DiningLocation]) -> List[Dict]:
-        """Format menu data according to user preferences."""
-        formatted_locations = []
-        
-        for location_name, location in locations.items():
-            if not location.open_today:
-                continue
+            # Parse allergens
+            allergens = []
+            try:
+                allergens_text = meal_item.find_element(By.TAG_NAME, 'em').text
+                if "Contains: " in allergens_text:
+                    allergens = allergens_text.split("Contains: ")[1].split(", ")
+            except NoSuchElementException:
+                pass
 
-            location_data = {
-                "name": location_name,
-                "open_times": location.open_times,
-                "meals": []
-            }
+            return MenuItem(
+                title=title,
+                allergens=allergens,
+                **dietary_info
+            )
 
-            for meal_type, stations in location.menus.items():
-                if not stations:
+        def format_menu_for_user(self, user: Dict, locations: Dict[str, DiningLocation]) -> List[Dict]:
+            """Format menu data according to user preferences."""
+            formatted_locations = []
+            
+            for location_name, location in locations.items():
+                if not location.open_today:
                     continue
 
-                meal_data = {
-                    "meal_type": meal_type,
-                    "stations": []
+                location_data = {
+                    "name": location_name,
+                    "open_times": location.open_times,
+                    "meals": []
                 }
 
-                for station_name, items in stations.items():
-                    station_data = {
-                        "station_name": station_name,
-                        "items": []
+                for meal_type, stations in location.menus.items():
+                    if not stations:
+                        continue
+
+                    meal_data = {
+                        "meal_type": meal_type,
+                        "stations": []
                     }
 
-                    for item_name, item in items.items():
-                        # Check dietary preferences
-                        if user.get('is_vegetarian') and not item.is_vegetarian:
-                            continue
-                        if user.get('is_vegan') and not item.is_vegan:
-                            continue
-                        if user.get('is_halal') and not item.is_halal:
-                            continue
+                    for station_name, items in stations.items():
+                        station_data = {
+                            "station_name": station_name,
+                            "items": []
+                        }
 
-                        # Check allergens
-                        skip_item = False
-                        for unavailable in user.get('unavailable_foods', []):
-                            if any(allergen.lower() == unavailable.lower() for allergen in item.allergens):
-                                skip_item = True
-                                break
-                        if skip_item:
-                            continue
+                        for item_name, item in items.items():
+                            # Check dietary preferences
+                            if user.get('is_vegetarian') and not item.is_vegetarian:
+                                continue
+                            if user.get('is_vegan') and not item.is_vegan:
+                                continue
+                            if user.get('is_halal') and not item.is_halal:
+                                continue
 
-                        # Format dietary information
-                        dietary = []
-                        if item.is_vegan:
-                            dietary.append("Vegan")
-                        elif item.is_vegetarian:
-                            dietary.append("Vegetarian")
-                        if item.is_halal:
-                            dietary.append("Halal")
+                            # Check allergens
+                            skip_item = False
+                            for unavailable in user.get('unavailable_foods', []):
+                                if any(allergen.lower() == unavailable.lower() for allergen in item.allergens):
+                                    skip_item = True
+                                    break
+                            if skip_item:
+                                continue
 
-                        station_data["items"].append({
-                            "name": item_name,
-                            "dietary": ", ".join(dietary) if dietary else None,
-                            "allergens": ", ".join(item.allergens) if item.allergens else None
-                        })
+                            # Format dietary information
+                            dietary = []
+                            if item.is_vegan:
+                                dietary.append("Vegan")
+                            elif item.is_vegetarian:
+                                dietary.append("Vegetarian")
+                            if item.is_halal:
+                                dietary.append("Halal")
 
-                    if station_data["items"]:
-                        meal_data["stations"].append(station_data)
+                            station_data["items"].append({
+                                "name": item_name,
+                                "dietary": ", ".join(dietary) if dietary else None,
+                                "allergens": ", ".join(item.allergens) if item.allergens else None
+                            })
 
-                if meal_data["stations"]:
-                    location_data["meals"].append(meal_data)
+                        if station_data["items"]:
+                            meal_data["stations"].append(station_data)
 
-            if location_data["meals"]:
-                formatted_locations.append(location_data)
+                    if meal_data["stations"]:
+                        location_data["meals"].append(meal_data)
 
-        return formatted_locations
+                if location_data["meals"]:
+                    formatted_locations.append(location_data)
 
-    def send_email(self, user_email: str, formatted_menu: List[Dict]):
-        """Send formatted menu to user via SES."""
-        try:
-            template_data = {
-                "date": datetime.now().strftime("%A, %B %d, %Y"),
-                "subject": random.choice(self.subjects),  # Pick a random subject
-                "locations": formatted_menu,
-                "closed_locations": self.closed_locations
-            }
-            print("Template data", template_data)
-            response = ses.send_templated_email(
-                Source='roy@cudiningnotifications.com',  # Make sure this email is verified in SES
-                Destination={
-                    'ToAddresses': [user_email]
-                },
-                Template='ColumbiaDiningMenuUpdate',
-                TemplateData=json.dumps(template_data)
-            )
-            print(f"Email sent successfully to {user_email}")
-            return response
-        except Exception as e:
-            print(f"Error sending email to {user_email}: {e}")
-            raise
+            return formatted_locations
+
+        def send_email(self, user_email: str, formatted_menu: List[Dict]):
+            """Send formatted menu to user via SES."""
+            try:
+                template_data = {
+                    "date": datetime.now().strftime("%A, %B %d, %Y"),
+                    "subject": random.choice(self.subjects),  # Pick a random subject
+                    "locations": formatted_menu,
+                    "closed_locations": self.closed_locations
+                }
+                print("Template data", template_data)
+                response = ses.send_templated_email(
+                    Source='roy@cudiningnotifications.com',  # Make sure this email is verified in SES
+                    Destination={
+                        'ToAddresses': [user_email]
+                    },
+                    Template='ColumbiaDiningMenuUpdate',
+                    TemplateData=json.dumps(template_data)
+                )
+                print(f"Email sent successfully to {user_email}")
+                return response
+            except Exception as e:
+                print(f"Error sending email to {user_email}: {e}")
+                raise
 
 def lambda_handler(event, context):
     try:
