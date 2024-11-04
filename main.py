@@ -46,59 +46,36 @@ class DiningLocation:
     open_today: bool = False
     open_times: str = ""
 
-
-
 def initialize_driver():
     print('Initializing driver')
     # Set Chrome binary location
     options = webdriver.ChromeOptions()
 
-    #COMMENT THESE LINES TO RUN LOCALLY
-    # service = Service("/opt/chromedriver")
-    # options.add_argument("--single-process")
-    # options.add_argument("--disable-dev-tools")
-    # options.binary_location = '/opt/chrome/chrome'
+    # EC2 Configuration
+    service = Service("/usr/local/bin/chromedriver")
+    options.binary_location = '/usr/bin/google-chrome-stable'  # Updated from google-chrome to google-chrome-stable
 
-"""
-
-/usr/local/bin/google-chrome
-[ec2-user@ip-172-31-80-45 ~]$ which chromedriver
-/usr/bin/chromedriver
-"""
-    # UNCOMMENT TO RUN LOCALLY
-
-#     cd /tmp/
-# sudo wget https://chromedriver.storage.googleapis.com/80.0.3987.106/chromedriver_linux64.zip
-# sudo unzip chromedriver_linux64.zip
-# sudo mv chromedriver /usr/bin/chromedriver
-# chromedriver --version
-    service = Service('/opt/homebrew/bin/chromedriver')
-    options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-
-    # Absolute minimum required options for Lambda
+    # Required options for headless operation
     options.add_argument("--headless=new")
     options.add_argument('--no-sandbox')
     options.add_argument("--disable-gpu")
-
     options.add_argument("--disable-dev-shm-usage")
-
+    options.add_argument("--disable-dev-tools")
     options.add_argument("--no-zygote")
     options.add_argument(f"--user-data-dir={mkdtemp()}")
     options.add_argument(f"--data-path={mkdtemp()}")
     options.add_argument(f"--disk-cache-dir={mkdtemp()}")
     options.add_argument("--remote-debugging-port=9222")
 
-
-    # Add these options specifically for content loading
+    # Add these options for content loading
     options.add_argument('--disable-notifications')
     options.add_argument('--disable-infobars')
-    options.add_argument('--enable-javascript')  # Explicitly enable JavaScript
-    options.add_argument('--window-size=1920,1080')  # Set a proper window size
-    
-    # Don't disable images as they might be needed for page load detection
-    options.page_load_strategy = 'normal'  # Use 'normal' instead of 'eager'
-    
+    options.add_argument('--window-size=1920,1080')
+    options.page_load_strategy = 'normal'
 
+    # Debug information
+    print("Chrome binary path:", options.binary_location)
+    print("ChromeDriver path:", service.path)
 
     chrome = None
     try:
@@ -117,7 +94,8 @@ def initialize_driver():
         print(f"Chrome initialization error: {str(e)}")
         print(f"Chrome binary location: {options.binary_location}")
         print(f"ChromeDriver path: {service.path}")
-        raise Exception(f"Failed to start Chrome browser: {str(e)}")  
+        raise Exception(f"Failed to start Chrome browser: {str(e)}")
+
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
     TIMEOUT = 10
