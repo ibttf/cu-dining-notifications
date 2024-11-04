@@ -20,6 +20,9 @@ import subprocess
 import socket
 import resource
 
+
+
+
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -46,6 +49,7 @@ class DiningLocation:
     open_today: bool = False
     open_times: str = ""
 
+
 def initialize_driver():
     print('Initializing driver')
     # Set Chrome binary location
@@ -53,25 +57,34 @@ def initialize_driver():
 
     # EC2 Configuration
     service = Service("/usr/local/bin/chromedriver")
-    options.binary_location = '/usr/bin/google-chrome-stable'  # Updated from google-chrome to google-chrome-stable
-
-    # Required options for headless operation
-    options.add_argument("--headless=new")
+    options.binary_location = '/usr/bin/google-chrome-stable'
+    
+    # Enhanced browser configuration
+    user_agent = random.choice([
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ])
+    options.add_argument(f'user-agent={user_agent}')
+    
+    # Required options
+    options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-dev-tools")
-    options.add_argument("--no-zygote")
+    options.add_argument("--disable-browser-side-navigation")
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--disable-extensions')
+    options.add_argument('--disable-infobars')
+    options.add_argument('--window-size=1920,1080')
     options.add_argument(f"--user-data-dir={mkdtemp()}")
     options.add_argument(f"--data-path={mkdtemp()}")
     options.add_argument(f"--disk-cache-dir={mkdtemp()}")
-    options.add_argument("--remote-debugging-port=9222")
-
-    # Add these options for content loading
-    options.add_argument('--disable-notifications')
-    options.add_argument('--disable-infobars')
-    options.add_argument('--window-size=1920,1080')
-    options.page_load_strategy = 'normal'
+    
+    # Add experimental options
+    options.add_experimental_option('excludeSwitches', ['enable-automation'])
+    options.add_experimental_option('useAutomationExtension', False)
 
     # Debug information
     print("Chrome binary path:", options.binary_location)
@@ -82,6 +95,24 @@ def initialize_driver():
         # Initialize ChromeDriver with options and service
         chrome = webdriver.Chrome(options=options, service=service)
         print("Chrome browser started")
+        
+        # Execute CDP commands to modify browser characteristics
+        chrome.execute_cdp_cmd('Network.setUserAgentOverride', {
+            "userAgent": user_agent,
+            "platform": "Linux x86_64"
+        })
+        
+        # Modify navigator properties
+        chrome.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+            """
+        })
         
         # Set page load timeout
         chrome.set_page_load_timeout(20)
@@ -95,6 +126,9 @@ def initialize_driver():
         print(f"Chrome binary location: {options.binary_location}")
         print(f"ChromeDriver path: {service.path}")
         raise Exception(f"Failed to start Chrome browser: {str(e)}")
+
+
+
 
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
