@@ -18,6 +18,7 @@ import random
 import os 
 import subprocess
 import socket
+import resource
 
 # Set up logging
 logger = logging.getLogger()
@@ -46,23 +47,57 @@ class DiningLocation:
     open_times: str = ""
 
 
+
 def initialize_driver():
     print('Initializing driver')
     # Set Chrome binary location
     options = webdriver.ChromeOptions()
-    # service = webdriver.chrome.service.Service("/opt/chromedriver")
 
+    #COMMENT THESE LINES TO RUN LOCALLY
+    # service = Service("/opt/chromedriver")
+    # options.add_argument("--single-process")
+    # options.add_argument("--disable-dev-tools")
     # options.binary_location = '/opt/chrome/chrome'
-    # FOR MAC
+
+"""
+
+/usr/local/bin/google-chrome
+[ec2-user@ip-172-31-80-45 ~]$ which chromedriver
+/usr/bin/chromedriver
+"""
+    # UNCOMMENT TO RUN LOCALLY
+
+#     cd /tmp/
+# sudo wget https://chromedriver.storage.googleapis.com/80.0.3987.106/chromedriver_linux64.zip
+# sudo unzip chromedriver_linux64.zip
+# sudo mv chromedriver /usr/bin/chromedriver
+# chromedriver --version
     service = Service('/opt/homebrew/bin/chromedriver')
     options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
     # Absolute minimum required options for Lambda
-    options.add_argument('--headless=new')
+    options.add_argument("--headless=new")
     options.add_argument('--no-sandbox')
-    options.add_argument('--disable-gpu')
-    # options.add_argument('--single-process')
-    # options.add_argument('--disable-dev-shm-usage')
+    options.add_argument("--disable-gpu")
+
+    options.add_argument("--disable-dev-shm-usage")
+
+    options.add_argument("--no-zygote")
+    options.add_argument(f"--user-data-dir={mkdtemp()}")
+    options.add_argument(f"--data-path={mkdtemp()}")
+    options.add_argument(f"--disk-cache-dir={mkdtemp()}")
+    options.add_argument("--remote-debugging-port=9222")
+
+
+    # Add these options specifically for content loading
+    options.add_argument('--disable-notifications')
+    options.add_argument('--disable-infobars')
+    options.add_argument('--enable-javascript')  # Explicitly enable JavaScript
+    options.add_argument('--window-size=1920,1080')  # Set a proper window size
+    
+    # Don't disable images as they might be needed for page load detection
+    options.page_load_strategy = 'normal'  # Use 'normal' instead of 'eager'
+    
 
 
     chrome = None
@@ -72,7 +107,7 @@ def initialize_driver():
         print("Chrome browser started")
         
         # Set page load timeout
-        chrome.set_page_load_timeout(30)
+        chrome.set_page_load_timeout(20)
         print(f"Chrome version: {chrome.capabilities['browserVersion']}")
         print(f"ChromeDriver version: {chrome.capabilities['chrome']['chromedriverVersion']}")
 
@@ -261,16 +296,17 @@ class ColumbiaDiningScraper:
             
             # Add initial wait for page load
             print("Waiting for page to load...")
-            time.sleep(5)  # Initial wait for page load
+            time.sleep(3)  # Initial wait for page load
             
             # Wait for any dynamic content to load
             try:
-                WebDriverWait(self.driver, 20).until(
+                WebDriverWait(self.driver, 5).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '.dining-location, .retail-location'))
                 )
                 print("Initial content loaded")
             except TimeoutException:
                 print("Timeout waiting for initial content")
+                raise
             
             # Click the "View More" button to show all locations
             retry_count = 0
@@ -357,7 +393,8 @@ class ColumbiaDiningScraper:
             for location in self.locations.values():
                 if location.open_today and location.menus:
                     self._scrape_location_menu(location)
-
+            print("Current URL:", self.driver.current_url)
+            print("Page source:", self.driver.page_source[:1000])  # First 1000 chars
         except Exception as e:
             print(f"Error during scraping: {e}")
             # Add more detailed error information
@@ -542,9 +579,6 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"DNS resolution failed: {e}")
     
-
-
-
     try:
         chrome_path = subprocess.check_output("find /opt /usr -name chrome", shell=True).decode()
         chromedriver_path = subprocess.check_output("find /opt /usr -name chromedriver", shell=True).decode()

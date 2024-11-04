@@ -1,9 +1,8 @@
 # Use the appropriate base image
-FROM umihico/aws-lambda-selenium-python:latest
+FROM --platform=linux/arm64 umihico/aws-lambda-selenium-python:latest
 
 # Install boto3
 RUN pip3 install boto3
-
 # Add Chrome options for running in Lambda environment
 ENV PYTHONPATH=/var/task
 ENV PATH="/var/task:${PATH}"

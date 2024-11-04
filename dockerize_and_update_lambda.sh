@@ -1,6 +1,6 @@
 
 # Get AWS account ID
-export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output tgit@github.com:diegoparrilla/headless-chrome-aws-lambda-layer.gitext)
 
 # Clean up any existing images on my local docker
 docker system prune -f
@@ -25,7 +25,3 @@ aws lambda update-function-code \
     --function-name cu-dining-notifications-lambda \
     --image-uri $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/cu-dining-notifications:latest
 
-# Update the memory size of the Lambda function
-aws lambda update-function-configuration \
-    --function-name cu-dining-notifications-lambda \
-    --memory-size 2048
