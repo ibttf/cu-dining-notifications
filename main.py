@@ -264,7 +264,69 @@ class ColumbiaDiningScraper:
             )
         }
 
-
+    def _safe_get_page(self, url, max_attempts=3):
+        """Safely load a page with retries and proper error handling."""
+        for attempt in range(max_attempts):
+            try:
+                # Load the page first
+                print(f"\nAttempt {attempt + 1} of {max_attempts} to load {url}")
+                self.driver.get(url)
+                
+                # Initial wait
+                time.sleep(random.uniform(3, 5))
+                
+                # Check for Cloudflare
+                if "Just a moment" in self.driver.title:
+                    print("Detected Cloudflare challenge, waiting...")
+                    time.sleep(random.uniform(8, 12))
+                    
+                    # Verify if we got past Cloudflare
+                    if "Just a moment" in self.driver.title:
+                        print("Still on Cloudflare page after waiting")
+                        if attempt < max_attempts - 1:
+                            # Clear cookies before retry
+                            self.driver.delete_all_cookies()
+                            time.sleep(random.uniform(2, 4))
+                            continue
+                        else:
+                            return False
+                
+                # Only try to clear storage if we have a valid page
+                try:
+                    # Clear memory but only if we're not on a data: URL
+                    if not self.driver.current_url.startswith('data:'):
+                        self.driver.execute_script('window.localStorage.clear();')
+                        self.driver.execute_script('window.sessionStorage.clear();')
+                except Exception as e:
+                    print(f"Storage clear failed (non-critical): {str(e)}")
+                
+                # Quick check if page loaded successfully
+                try:
+                    body = self.driver.find_element(By.TAG_NAME, 'body')
+                    if body:
+                        print("Page loaded successfully")
+                        return True
+                except:
+                    print("Could not verify page load")
+                    if attempt < max_attempts - 1:
+                        time.sleep(random.uniform(2, 4))
+                        continue
+                    return False
+                    
+            except Exception as e:
+                print(f"Error loading page (attempt {attempt + 1}): {str(e)}")
+                if attempt < max_attempts - 1:
+                    # Clear memory and reset state
+                    try:
+                        self.driver.execute_script("window.stop();")
+                    except:
+                        pass
+                    time.sleep(random.uniform(2, 4))
+                else:
+                    print("Failed to load page after all attempts")
+                    return False
+        
+        return False
 
     def _wait_and_find_element(self, by: By, value: str, timeout: int = TIMEOUT):
         """Wait for and return an element."""
@@ -335,63 +397,6 @@ class ColumbiaDiningScraper:
         except Exception as e:
             print(f"Error clicking 'View More' button: {e}")
             return False
-    def _safe_get_page(self, url, max_attempts=3):
-        """Safely load a page with retries and proper error handling."""
-        for attempt in range(max_attempts):
-            try:
-                # Clear memory before loading new page
-                self.driver.execute_script('window.localStorage.clear();')
-                self.driver.execute_script('window.sessionStorage.clear();')
-                
-                # Delete all cookies
-                self.driver.delete_all_cookies()
-                
-                # Load the page
-                print(f"\nAttempt {attempt + 1} of {max_attempts} to load {url}")
-                self.driver.get(url)
-                
-                # Initial wait
-                time.sleep(random.uniform(3, 5))
-                
-                # Check for Cloudflare
-                if "Just a moment" in self.driver.title:
-                    print("Detected Cloudflare challenge, waiting...")
-                    time.sleep(random.uniform(8, 12))
-                    
-                    # Verify if we got past Cloudflare
-                    if "Just a moment" in self.driver.title:  # Fixed syntax
-                        print("Still on Cloudflare page after waiting")
-                        if attempt < max_attempts - 1:
-                            continue
-                        else:
-                            return False
-                
-                # Quick check if page loaded successfully
-                try:
-                    body = self.driver.find_element(By.TAG_NAME, 'body')
-                    if body:
-                        print("Page loaded successfully")
-                        return True
-                except:
-                    print("Could not verify page load")
-                    if attempt < max_attempts - 1:
-                        continue
-                    return False
-                    
-            except Exception as e:
-                print(f"Error loading page (attempt {attempt + 1}): {str(e)}")
-                if attempt < max_attempts - 1:
-                    # Clear memory and reset state
-                    try:
-                        self.driver.execute_script("window.stop();")
-                    except:
-                        pass
-                    time.sleep(random.uniform(2, 4))
-                else:
-                    print("Failed to load page after all attempts")
-                    return False
-        
-        return False      
 
     def scrape_locations(self):
         """Scrape all dining locations and their menus."""
