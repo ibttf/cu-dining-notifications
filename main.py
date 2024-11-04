@@ -129,7 +129,6 @@ def initialize_driver():
 
 
 
-
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
     TIMEOUT = 10
@@ -304,35 +303,64 @@ class ColumbiaDiningScraper:
         """Scrape all dining locations and their menus."""
         try:
             print("Starting to scrape locations")
-            self.driver.get(self.BASE_URL)
             
-            # Add initial wait for page load
-            print("Waiting for page to load...")
-            time.sleep(3)  # Initial wait for page load
+            # Access the website with retry mechanism
+            max_retries = 3
+            retry_count = 0
             
-            # Wait for any dynamic content to load
-            try:
-                WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, '.dining-location, .retail-location'))
-                )
-                print("Initial content loaded")
-            except TimeoutException:
-                print("Timeout waiting for initial content")
-                raise
-            
+            while retry_count < max_retries:
+                try:
+                    print(f"\nAttempt {retry_count + 1} of {max_retries}")
+                    self.driver.get(self.BASE_URL)
+                    
+                    # Initial wait
+                    print("Waiting for page to load...")
+                    time.sleep(random.uniform(5, 8))
+                    
+                    print(f"Current title: {self.driver.title}")
+                    
+                    # Check if we're on the Cloudflare page
+                    if "Just a moment" in self.driver.title:
+                        print("Detected Cloudflare challenge page")
+                        # Wait longer for Cloudflare challenge to complete
+                        time.sleep(random.uniform(10, 15))
+                    
+                    # Try to find content with increased timeout
+                    try:
+                        WebDriverWait(self.driver, 15).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, '.dining-location, .retail-location'))
+                        )
+                        print("Initial content loaded")
+                        break
+                    except TimeoutException:
+                        print("Timeout waiting for initial content")
+                        print("Current page source preview:", self.driver.page_source[:200])
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            time.sleep(random.uniform(3, 5))
+                            continue
+                        raise
+                        
+                except Exception as e:
+                    print(f"Error during attempt {retry_count + 1}: {str(e)}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        time.sleep(random.uniform(3, 5))
+                        continue
+                    raise
+                
             # Click the "View More" button to show all locations
             retry_count = 0
-            max_retries = 3
             while retry_count < max_retries:
                 if self._click_view_more():
                     print("Successfully expanded locations")
                     break
                 print(f"Retry {retry_count + 1} of {max_retries} for expanding locations")
-                time.sleep(2)
+                time.sleep(random.uniform(2, 4))
                 retry_count += 1
             
             # Additional wait after expanding
-            time.sleep(3)
+            time.sleep(random.uniform(3, 5))
             
             # Find all dining and retail locations
             dining_locations = self.driver.find_elements(
@@ -346,13 +374,12 @@ class ColumbiaDiningScraper:
             all_locations = dining_locations + retail_locations
             print(f"Found {len(all_locations)} locations")
 
-            # Reset closed locations list
+            # Rest of your existing code remains the same
             self.closed_locations = []
 
             # Process each location
             for loc in all_locations:
                 try:
-                    # Find the location title using the link element
                     title_element = loc.find_element(By.CSS_SELECTOR, '.name a')
                     if not title_element:
                         continue
@@ -363,19 +390,15 @@ class ColumbiaDiningScraper:
                         continue
                         
                     print(f"Processing location: {title}")
-                
                     
                     # Check if location is in our tracking list
                     if title in self.locations:
-                        # Check if the location is open by looking for open-time with content
                         try:
                             open_time_element = loc.find_element(By.CSS_SELECTOR, '.open-time')
                             open_times = open_time_element.text.strip() if open_time_element else ""
                             
-                            # A location is considered open if it has open times
                             is_open = bool(open_times)
                             
-                            # Update location status
                             self.locations[title].open_today = is_open
                             self.locations[title].open_times = open_times
                             
@@ -386,7 +409,6 @@ class ColumbiaDiningScraper:
                                 print(f"Location {title} is closed")
                             
                         except NoSuchElementException:
-                            # No open time element found - location is closed
                             self.locations[title].open_today = False
                             self.locations[title].open_times = ""
                             self.closed_locations.append(title)
@@ -401,22 +423,19 @@ class ColumbiaDiningScraper:
                     print(f"Unexpected error processing location: {e}")
                     continue
 
-            # Scrape menus for open locations that have menu configurations
+            # Scrape menus for open locations
             for location in self.locations.values():
                 if location.open_today and location.menus:
                     self._scrape_location_menu(location)
-            print("Current URL:", self.driver.current_url)
-            print("Page source:", self.driver.page_source[:1000])  # First 1000 chars
+                    
         except Exception as e:
             print(f"Error during scraping: {e}")
-            # Add more detailed error information
             print("Current URL:", self.driver.current_url)
-            print("Page source:", self.driver.page_source[:1000])  # First 1000 chars
+            print("Page source:", self.driver.page_source[:1000])
             raise
         finally:
             if self.driver:
                 self.driver.quit()
-
     def _scrape_location_menu(self, location: DiningLocation):
         """Scrape menu for a specific location."""
         print(f"Scraping menu for {location.name}")
