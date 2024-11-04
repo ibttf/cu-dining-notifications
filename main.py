@@ -18,61 +18,7 @@ import random
 import os 
 import subprocess
 import socket
-import requests
-from typing import Optional, List
-import random
 import resource
-
-
-class ProxyRotator:
-    def __init__(self):
-        # List of free proxies (you should replace these with paid/reliable proxies)
-        self.proxies = []
-        self.last_update = 0
-        self.update_interval = 300  # 5 minutes
-    
-    def _update_proxy_list(self):
-        """Update the proxy list from various sources."""
-        try:
-            # Free proxy list (replace with your paid proxy service)
-            response = requests.get('https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt')
-            if response.status_code == 200:
-                self.proxies = [line.strip() for line in response.text.split('\n') if line.strip()]
-            
-            # You can add more proxy sources here
-            self.last_update = time.time()
-            print(f"Updated proxy list, got {len(self.proxies)} proxies")
-            
-        except Exception as e:
-            print(f"Error updating proxy list: {e}")
-    
-    def _test_proxy(self, proxy: str, timeout: int = 5) -> bool:
-        """Test if a proxy is working."""
-        try:
-            test_url = 'https://www.google.com'
-            proxies = {
-                'http': f'http://{proxy}',
-                'https': f'http://{proxy}'
-            }
-            response = requests.get(test_url, proxies=proxies, timeout=timeout)
-            return response.status_code == 200
-        except:
-            return False
-    
-    def get_working_proxy(self) -> Optional[str]:
-        """Get a working proxy from the list."""
-        if time.time() - self.last_update > self.update_interval:
-            self._update_proxy_list()
-            
-        # Shuffle proxies to avoid using the same ones
-        random.shuffle(self.proxies)
-        
-        # Try proxies until we find a working one
-        for proxy in self.proxies[:10]:  # Try up to 10 proxies
-            if self._test_proxy(proxy):
-                return proxy
-        return None
-
 
 # Set up logging
 logger = logging.getLogger()
@@ -100,84 +46,74 @@ class DiningLocation:
     open_today: bool = False
     open_times: str = ""
 
+
+
 def initialize_driver():
     print('Initializing driver')
+    # Set Chrome binary location
     options = webdriver.ChromeOptions()
 
-    # Local Configuration - modify these paths based on your OS
-    if os.name == 'posix':  # Mac/Linux
-        service = Service('/opt/homebrew/bin/chromedriver')  # Mac with Homebrew
-        options.binary_location = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-    else:  # Windows
-        service = Service('C:\\Program Files\\chromedriver.exe')  # Adjust path as needed
-        options.binary_location = 'C:\\Program Files\\Google Chrome\\Application\\chrome.exe'
+    #TO RUN ON MAC INSTANCE
 
-    # EC2 Configuration
-    service = Service("/usr/local/bin/chromedriver")
-    options.binary_location = '/usr/bin/google-chrome-stable'
-    
-    # Enhanced browser configuration with proxy-friendly settings
-    user_agent = random.choice([
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    ])
-    
-    
-    options.add_argument(f'user-agent={user_agent}')
-    options.add_argument('--headless=new')
+    service = Service('/opt/homebrew/bin/chromedriver')
+    options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+
+
+
+    #ON EC2 INSTANCE
+    # service = Service("/opt/chromedriver")
+    # options.binary_location = '/opt/chrome/chrome'
+    # options.add_argument("--single-process")
+    # options.add_argument("--disable-dev-tools")
+
+
+
+
+    # Absolute minimum required options for Lambda
+    # options.add_argument("--headless=new")
     options.add_argument('--no-sandbox')
     options.add_argument("--disable-gpu")
+
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument('--disable-blink-features=AutomationControlled')
+
+    options.add_argument("--no-zygote")
+    options.add_argument(f"--user-data-dir={mkdtemp()}")
+    options.add_argument(f"--data-path={mkdtemp()}")
+    options.add_argument(f"--disk-cache-dir={mkdtemp()}")
+    options.add_argument("--remote-debugging-port=9222")
+
+
+    # Add these options specifically for content loading
+    options.add_argument('--disable-notifications')
+    options.add_argument('--disable-infobars')
+    options.add_argument('--enable-javascript')  # Explicitly enable JavaScript
+    options.add_argument('--window-size=1920,1080')  # Set a proper window size
     
-    # Add experimental options
-    options.add_experimental_option('excludeSwitches', ['enable-automation'])
-    options.add_experimental_option('useAutomationExtension', False)
+    # Don't disable images as they might be needed for page load detection
+    options.page_load_strategy = 'normal'  # Use 'normal' instead of 'eager'
+    
 
-    # Debug information
-    print("Chrome binary path:", options.binary_location)
-    print("ChromeDriver path:", service.path)
 
-    def create_driver():
-        driver = webdriver.Chrome(options=options, service=service)
+    chrome = None
+    try:
+        # Initialize ChromeDriver with options and service
+        chrome = webdriver.Chrome(options=options, service=service)
+        print("Chrome browser started")
         
-        # Execute CDP commands to modify browser characteristics
-        driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-            "userAgent": user_agent,
-            "platform": "Windows",  # Changed to Windows for better acceptance
-            "acceptLanguage": "en-US,en;q=0.9"
-        })
-        
-        # Additional CDP commands for stealth
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-            """
-        })
-        
-        return driver
+        # Set page load timeout
+        chrome.set_page_load_timeout(20)
+        print(f"Chrome version: {chrome.capabilities['browserVersion']}")
+        print(f"ChromeDriver version: {chrome.capabilities['chrome']['chromedriverVersion']}")
 
-    # Try to create driver with retries
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            driver = create_driver()
-            print(f"Chrome started successfully on attempt {attempt + 1}")
-            return driver
-        except Exception as e:
-            print(f"Attempt {attempt + 1} failed: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                raise Exception(f"Failed to start Chrome after {max_retries} attempts: {str(e)}")
-
-
-
-
+        return chrome
+    
+    except Exception as e:
+        print(f"Chrome initialization error: {str(e)}")
+        print(f"Chrome binary location: {options.binary_location}")
+        print(f"ChromeDriver path: {service.path}")
+        raise Exception(f"Failed to start Chrome browser: {str(e)}")  
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
     TIMEOUT = 10
@@ -277,69 +213,7 @@ class ColumbiaDiningScraper:
             )
         }
 
-    def _safe_get_page(self, url, max_attempts=3):
-        """Safely load a page with retries and proper error handling."""
-        for attempt in range(max_attempts):
-            try:
-                # Load the page first
-                print(f"\nAttempt {attempt + 1} of {max_attempts} to load {url}")
-                self.driver.get(url)
-                
-                # Initial wait
-                time.sleep(random.uniform(3, 5))
-                
-                # Check for Cloudflare
-                if "Just a moment" in self.driver.title:
-                    print("Detected Cloudflare challenge, waiting...")
-                    time.sleep(random.uniform(8, 12))
-                    
-                    # Verify if we got past Cloudflare
-                    if "Just a moment" in self.driver.title:
-                        print("Still on Cloudflare page after waiting")
-                        if attempt < max_attempts - 1:
-                            # Clear cookies before retry
-                            self.driver.delete_all_cookies()
-                            time.sleep(random.uniform(2, 4))
-                            continue
-                        else:
-                            return False
-                
-                # Only try to clear storage if we have a valid page
-                try:
-                    # Clear memory but only if we're not on a data: URL
-                    if not self.driver.current_url.startswith('data:'):
-                        self.driver.execute_script('window.localStorage.clear();')
-                        self.driver.execute_script('window.sessionStorage.clear();')
-                except Exception as e:
-                    print(f"Storage clear failed (non-critical): {str(e)}")
-                
-                # Quick check if page loaded successfully
-                try:
-                    body = self.driver.find_element(By.TAG_NAME, 'body')
-                    if body:
-                        print("Page loaded successfully")
-                        return True
-                except:
-                    print("Could not verify page load")
-                    if attempt < max_attempts - 1:
-                        time.sleep(random.uniform(2, 4))
-                        continue
-                    return False
-                    
-            except Exception as e:
-                print(f"Error loading page (attempt {attempt + 1}): {str(e)}")
-                if attempt < max_attempts - 1:
-                    # Clear memory and reset state
-                    try:
-                        self.driver.execute_script("window.stop();")
-                    except:
-                        pass
-                    time.sleep(random.uniform(2, 4))
-                else:
-                    print("Failed to load page after all attempts")
-                    return False
-        
-        return False
+
 
     def _wait_and_find_element(self, by: By, value: str, timeout: int = TIMEOUT):
         """Wait for and return an element."""
@@ -410,91 +284,51 @@ class ColumbiaDiningScraper:
         except Exception as e:
             print(f"Error clicking 'View More' button: {e}")
             return False
-
     def scrape_locations(self):
         """Scrape all dining locations and their menus."""
         try:
             print("Starting to scrape locations")
-            if not self._safe_get_page(self.BASE_URL):
-                raise Exception("Failed to load main dining page after all attempts")
-
-            # Wait for any dynamic content to load with retry logic
-            max_content_retries = 3
-            for attempt in range(max_content_retries):
-                try:
-                    print(f"\nAttempting to find dining locations (attempt {attempt + 1})")
-                    
-                    # Wait for locations to be present
-                    WebDriverWait(self.driver, 15).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, '.dining-location, .retail-location'))
-                    )
-                    print("Found initial locations")
-                    break
-                except TimeoutException:
-                    if attempt < max_content_retries - 1:
-                        print("Timeout waiting for locations, retrying...")
-                        self.driver.refresh()
-                        time.sleep(random.uniform(3, 5))
-                    else:
-                        raise Exception("Could not find any dining locations after all attempts")
-
-            # Click the "View More" button with retry logic
-            view_more_attempts = 0
-            while view_more_attempts < 3:
-                try:
-                    print("\nLooking for 'View More' button...")
-                    
-                    # Try different selectors
-                    selectors = [
-                        '.show-all-dinings',
-                        'button.show-all-dinings',
-                        '.show-all-locations',
-                        'button.show-all-locations',
-                        'button[onclick*="show-all"]'
-                    ]
-                    
-                    button_found = False
-                    for selector in selectors:
-                        try:
-                            button = WebDriverWait(self.driver, 5).until(
-                                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                            )
-                            if button:
-                                print(f"Found button with selector: {selector}")
-                                # Scroll into view and click
-                                self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
-                                time.sleep(random.uniform(1, 2))
-                                self.driver.execute_script("arguments[0].click();", button)
-                                button_found = True
-                                break
-                        except TimeoutException:
-                            continue
-
-                    if button_found:
-                        print("Successfully clicked 'View More'")
-                        time.sleep(random.uniform(3, 5))
-                        break
-                    else:
-                        print("No 'View More' button found, might be already expanded")
-                        break
-
-                except Exception as e:
-                    print(f"Error clicking 'View More' (attempt {view_more_attempts + 1}): {str(e)}")
-                    view_more_attempts += 1
-                    if view_more_attempts < 3:
-                        time.sleep(random.uniform(2, 4))
-                    continue
-
-            # Find all locations after expansion
-            print("\nLocating all dining locations...")
-            dining_locations = self.driver.find_elements(By.CSS_SELECTOR, '.dining-location')
-            retail_locations = self.driver.find_elements(By.CSS_SELECTOR, '.retail-location')
-            all_locations = dining_locations + retail_locations
+            self.driver.get(self.BASE_URL)
             
-            if not all_locations:
-                raise Exception("No locations found after expansion")
-                
-            print(f"Found {len(all_locations)} total locations")
+            # Add initial wait for page load
+            print("Waiting for page to load...")
+            time.sleep(3)  # Initial wait for page load
+            
+            # Wait for any dynamic content to load
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '.dining-location, .retail-location'))
+                )
+                print("Initial content loaded")
+            except TimeoutException:
+                print("Timeout waiting for initial content")
+                raise
+            
+            # Click the "View More" button to show all locations
+            retry_count = 0
+            max_retries = 3
+            while retry_count < max_retries:
+                if self._click_view_more():
+                    print("Successfully expanded locations")
+                    break
+                print(f"Retry {retry_count + 1} of {max_retries} for expanding locations")
+                time.sleep(2)
+                retry_count += 1
+            
+            # Additional wait after expanding
+            time.sleep(3)
+            
+            # Find all dining and retail locations
+            dining_locations = self.driver.find_elements(
+                By.CSS_SELECTOR, 
+                '.dining-location'
+            )
+            retail_locations = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                '.retail-location'
+            )
+            all_locations = dining_locations + retail_locations
+            print(f"Found {len(all_locations)} locations")
 
             # Reset closed locations list
             self.closed_locations = []
@@ -502,24 +336,27 @@ class ColumbiaDiningScraper:
             # Process each location
             for loc in all_locations:
                 try:
-                    # Find the location title
+                    # Find the location title using the link element
                     title_element = loc.find_element(By.CSS_SELECTOR, '.name a')
                     if not title_element:
                         continue
                     
                     title = title_element.text.strip()
-                    if not title:
+                    
+                    if not title:  # Skip if title is empty
                         continue
                         
-                    print(f"\nProcessing location: {title}")
+                    print(f"Processing location: {title}")
+                
                     
                     # Check if location is in our tracking list
                     if title in self.locations:
+                        # Check if the location is open by looking for open-time with content
                         try:
-                            # Check if location is open
                             open_time_element = loc.find_element(By.CSS_SELECTOR, '.open-time')
                             open_times = open_time_element.text.strip() if open_time_element else ""
                             
+                            # A location is considered open if it has open times
                             is_open = bool(open_times)
                             
                             # Update location status
@@ -527,128 +364,209 @@ class ColumbiaDiningScraper:
                             self.locations[title].open_times = open_times
                             
                             if is_open:
-                                print(f"{title} is open: {open_times}")
+                                print(f"Location {title} is open: {open_times}")
                             else:
                                 self.closed_locations.append(title)
-                                print(f"{title} is closed")
+                                print(f"Location {title} is closed")
                             
                         except NoSuchElementException:
-                            print(f"{title} appears to be closed (no hours found)")
+                            # No open time element found - location is closed
                             self.locations[title].open_today = False
                             self.locations[title].open_times = ""
                             self.closed_locations.append(title)
-                            
+                            print(f"Location {title} is closed (no open times found)")
+                    else:
+                        print(f"Warning: Found location '{title}' on website that isn't in our tracking list")
+
+                except NoSuchElementException as e:
+                    print(f"Error processing location: {e}")
+                    continue
                 except Exception as e:
-                    print(f"Error processing location {title if 'title' in locals() else 'unknown'}: {str(e)}")
+                    print(f"Unexpected error processing location: {e}")
                     continue
 
-            # Scrape menus for open locations
-            print("\nBeginning menu scraping for open locations...")
+            # Scrape menus for open locations that have menu configurations
             for location in self.locations.values():
                 if location.open_today and location.menus:
-                    print(f"\nScraping menu for: {location.name}")
                     self._scrape_location_menu(location)
-
+            print("Current URL:", self.driver.current_url)
+            print("Page source:", self.driver.page_source[:1000])  # First 1000 chars
         except Exception as e:
-            print(f"\nError during location scraping: {str(e)}")
-            if self.driver:
-                print("Final URL:", self.driver.current_url)
-                print("Page source preview:", self.driver.page_source[:500])
+            print(f"Error during scraping: {e}")
+            # Add more detailed error information
+            print("Current URL:", self.driver.current_url)
+            print("Page source:", self.driver.page_source[:1000])  # First 1000 chars
             raise
+        finally:
+            if self.driver:
+                self.driver.quit()
 
     def _scrape_location_menu(self, location: DiningLocation):
         """Scrape menu for a specific location."""
+        print(f"Scraping menu for {location.name}")
+        self.driver.get(location.url)
+
         try:
-            if not self._safe_get_page(location.url):
-                print(f"Skipping menu scrape for {location.name} - could not load page")
+            menu_tabs = self._wait_and_find_element(By.CSS_SELECTOR, '.cu-dining-menu-tabs')
+            if not menu_tabs:
                 return
 
-            # Wait for menu tabs
-            try:
-                menu_tabs = WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, '.cu-dining-menu-tabs'))
-                )
-                print("Found menu tabs")
-            except TimeoutException:
-                print(f"No menu tabs found for {location.name}")
-                return
-
-            # Process each meal type
             for meal_type in location.menus.keys():
-                print(f"\nProcessing {meal_type} menu...")
                 try:
-                    # Find and click meal type button
-                    button = None
-                    button_attempts = 0
-                    while button_attempts < 3:
-                        try:
-                            button = WebDriverWait(self.driver, 10).until(
-                                EC.element_to_be_clickable(
-                                    (By.XPATH, f"//button[text()='{meal_type}' and contains(@class, 'ng-binding')]")
-                                )
-                            )
-                            break
-                        except TimeoutException:
-                            button_attempts += 1
-                            if button_attempts < 3:
-                                print(f"Retrying to find {meal_type} button...")
-                                time.sleep(random.uniform(2, 3))
-                            else:
-                                print(f"Could not find button for {meal_type}")
-                                continue
-
-                    if not button:
-                        continue
-
-                    # Click the button and wait for content
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
-                    time.sleep(random.uniform(1, 2))
-                    self.driver.execute_script("arguments[0].click();", button)
-                    time.sleep(random.uniform(2, 3))
-
-                    # Find all stations
-                    stations = WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_all_elements_located(
-                            (By.XPATH, ".//div[div[contains(@class, 'meal-items')]]")
+                    button = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable(
+                            (By.XPATH, f"//button[text()='{meal_type}' and contains(@class, 'ng-binding')]")
                         )
                     )
-                    
-                    # Process each station
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
+                    self.driver.execute_script("arguments[0].click();", button)
+                    time.sleep(1)
+
+                    stations = self.driver.find_elements(By.XPATH, ".//div[div[contains(@class, 'meal-items')]]")
                     for station in stations:
-                        try:
-                            station_name = station.find_element(By.CSS_SELECTOR, '.station-title').text
-                            if not station_name:
-                                continue
+                        station_name = station.find_element(By.CSS_SELECTOR, '.station-title').text
+                        if station_name not in location.menus[meal_type]:
+                            location.menus[meal_type][station_name] = {}
 
-                            if station_name not in location.menus[meal_type]:
-                                location.menus[meal_type][station_name] = {}
+                        meal_items = station.find_elements(By.CSS_SELECTOR, '.meal-item')
+                        for meal_item in meal_items:
+                            menu_item = self._parse_menu_item(meal_item)
+                            location.menus[meal_type][station_name][menu_item.title] = menu_item
 
-                            # Process meal items at this station
-                            meal_items = station.find_elements(By.CSS_SELECTOR, '.meal-item')
-                            if meal_items:
-                                print(f"Found {len(meal_items)} items at {station_name}")
-                                for meal_item in meal_items:
-                                    menu_item = self._parse_menu_item(meal_item)
-                                    location.menus[meal_type][station_name][menu_item.title] = menu_item
-                            else:
-                                print(f"No items found at {station_name}")
-
-                        except Exception as e:
-                            print(f"Error processing station in {meal_type}: {str(e)}")
-                            continue
-
-                except Exception as e:
-                    print(f"Error processing {meal_type} menu: {str(e)}")
+                except TimeoutException:
+                    logger.debug(f"No {meal_type} menu found for {location.name}")
                     continue
 
         except Exception as e:
-            print(f"Error scraping menu for {location.name}: {str(e)}")
-            if self.driver:
-                print("Current URL:", self.driver.current_url)
-                print("Page source preview:", self.driver.page_source[:200])
+            print(f"Error scraping menu for {location.name}: {e}")
 
+    def _parse_menu_item(self, meal_item) -> MenuItem:
+        """Parse a menu item element and return MenuItem object."""
+        title = meal_item.find_element(By.CSS_SELECTOR, '.meal-title').text
 
+        # Parse dietary information
+        dietary_info = {'is_vegetarian': False, 'is_vegan': False, 'is_halal': False}
+        try:
+            dietary_text = meal_item.find_element(By.CSS_SELECTOR, 'div.meal-prefs strong').text
+            dietary_info = {
+                'is_vegetarian': "Vegetarian" in dietary_text or "Vegan" in dietary_text,
+                'is_vegan': "Vegan" in dietary_text,
+                'is_halal': "Halal" in dietary_text
+            }
+        except NoSuchElementException:
+            pass
 
+        # Parse allergens
+        allergens = []
+        try:
+            allergens_text = meal_item.find_element(By.TAG_NAME, 'em').text
+            if "Contains: " in allergens_text:
+                allergens = allergens_text.split("Contains: ")[1].split(", ")
+        except NoSuchElementException:
+            pass
+
+        return MenuItem(
+            title=title,
+            allergens=allergens,
+            **dietary_info
+        )
+
+    def format_menu_for_user(self, user: Dict, locations: Dict[str, DiningLocation]) -> List[Dict]:
+        """Format menu data according to user preferences."""
+        formatted_locations = []
+        
+        for location_name, location in locations.items():
+            if not location.open_today:
+                continue
+
+            location_data = {
+                "name": location_name,
+                "open_times": location.open_times,
+                "meals": []
+            }
+
+            for meal_type, stations in location.menus.items():
+                if not stations:
+                    continue
+
+                meal_data = {
+                    "meal_type": meal_type,
+                    "stations": []
+                }
+
+                for station_name, items in stations.items():
+                    station_data = {
+                        "station_name": station_name,
+                        "items": []
+                    }
+
+                    for item_name, item in items.items():
+                        # Check dietary preferences
+                        if user.get('is_vegetarian') and not item.is_vegetarian:
+                            continue
+                        if user.get('is_vegan') and not item.is_vegan:
+                            continue
+                        if user.get('is_halal') and not item.is_halal:
+                            continue
+
+                        # Check allergens
+                        skip_item = False
+                        for unavailable in user.get('unavailable_foods', []):
+                            if any(allergen.lower() == unavailable.lower() for allergen in item.allergens):
+                                skip_item = True
+                                break
+                        if skip_item:
+                            continue
+
+                        # Format dietary information
+                        dietary = []
+                        if item.is_vegan:
+                            dietary.append("Vegan")
+                        elif item.is_vegetarian:
+                            dietary.append("Vegetarian")
+                        if item.is_halal:
+                            dietary.append("Halal")
+
+                        station_data["items"].append({
+                            "name": item_name,
+                            "dietary": ", ".join(dietary) if dietary else None,
+                            "allergens": ", ".join(item.allergens) if item.allergens else None
+                        })
+
+                    if station_data["items"]:
+                        meal_data["stations"].append(station_data)
+
+                if meal_data["stations"]:
+                    location_data["meals"].append(meal_data)
+
+            if location_data["meals"]:
+                formatted_locations.append(location_data)
+
+        return formatted_locations
+
+    def send_email(self, user_email: str, formatted_menu: List[Dict]):
+        """Send formatted menu to user via SES."""
+        try:
+            template_data = {
+                "date": datetime.now().strftime("%A, %B %d, %Y"),
+                "subject": random.choice(self.subjects),  # Pick a random subject
+                "locations": formatted_menu,
+                "closed_locations": self.closed_locations
+            }
+            print("Template data", template_data)
+            response = ses.send_templated_email(
+                Source='roy@cudiningnotifications.com',  # Make sure this email is verified in SES
+                Destination={
+                    'ToAddresses': [user_email]
+                },
+                Template='ColumbiaDiningMenuUpdate',
+                TemplateData=json.dumps(template_data)
+            )
+            print(f"Email sent successfully to {user_email}")
+            return response
+        except Exception as e:
+            print(f"Error sending email to {user_email}: {e}")
+            raise
 
 def lambda_handler(event, context):
     try:
@@ -657,6 +575,13 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"DNS resolution failed: {e}")
     
+    try:
+        chrome_path = subprocess.check_output("find /opt /usr -name chrome", shell=True).decode()
+        chromedriver_path = subprocess.check_output("find /opt /usr -name chromedriver", shell=True).decode()
+        logger.info(f"Chrome path:\n{chrome_path}")
+        logger.info(f"Chromedriver path:\n{chromedriver_path}")
+    except Exception as e:
+        print(f"Error finding Chrome or Chromedriver: {e}")
     successful_sends=[]
     try:
         
@@ -702,4 +627,10 @@ lambda_handler(None, None)
 
 
 
+#random bash script to move the chromedriver to the right place in the ec2 instance.
 
+    # cd /tmp/
+    # sudo wget https://chromedriver.storage.googleapis.com/80.0.3987.106/chromedriver_linux64.zip
+    # sudo unzip chromedriver_linux64.zip
+    # sudo mv chromedriver /usr/bin/chromedriver
+    # chromedriver --version
