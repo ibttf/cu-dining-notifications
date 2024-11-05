@@ -142,33 +142,50 @@ class ColumbiaDiningScraper:
         )
     }
 
-
-    def _fetch_page_html(self, url: str) -> str:
-        """Fetch page HTML using Zyte API."""
+    def _fetch_page_html(self, url: str, browser_commands: List[Dict] = None) -> str:
+        """Fetch page HTML using Zyte API with JavaScript rendering and optional browser commands."""
         try:
+            payload = {
+                "url": url,
+                "javascript": True,     # Enable JavaScript rendering
+                "browserHtml": True     # Get the full HTML after JS execution
+            }
+
+            if browser_commands:
+                payload["browserCommands"] = browser_commands
+
+            print(f"Sending request to Zyte API for {url} with payload: {json.dumps(payload)}")
+
             response = requests.post(
                 "https://api.zyte.com/v1/extract",
                 auth=(self.api_key, ""),
-                json={
-                    "url": url,
-                    "browserHtml": True,
-                }
+                json=payload
             )
             response.raise_for_status()
-            return response.json()["browserHtml"]
+            json_response = response.json()
+            # Return the browser HTML if available
+            if "browserHtml" in json_response:
+                print(f"Received browserHtml for {url}")
+                return json_response["browserHtml"]
+            else:
+                print(f"Error: No 'browserHtml' in Zyte API response for {url}")
+                print(f"Full response content: {json_response}")
+                raise ValueError("No browserHtml in response")
         except Exception as e:
-            logger.error(f"Error fetching page {url}: {e}")
+            print(f"Error fetching page {url}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Full error response: {e.response.text}")
             raise
 
     def scrape_locations(self):
-        """Scrape all dining locations and their menus."""
+        """Scrape all dining locations and their open status."""
         try:
             print("Starting to scrape locations")
             html_content = self._fetch_page_html(self.BASE_URL)
             soup = BeautifulSoup(html_content, 'html.parser')
 
             # Find all dining and retail locations
-            all_locations = soup.select('.dining-location, .retail-location')
+            all_locations = soup.select('.location')
             print(f"Found {len(all_locations)} locations")
 
             # Reset closed locations list
@@ -177,6 +194,7 @@ class ColumbiaDiningScraper:
             # Process each location
             for loc in all_locations:
                 try:
+                    # Get the title
                     title_element = loc.select_one('.name a')
                     if not title_element:
                         continue
@@ -188,11 +206,15 @@ class ColumbiaDiningScraper:
                     print(f"Processing location: {title}")
 
                     if title in self.locations:
-                        # Check if location is open
+                        # Get open times
                         open_time_element = loc.select_one('.open-time')
                         open_times = open_time_element.text.strip() if open_time_element else ""
-                        
-                        is_open = bool(open_times)
+
+                        # Get status
+                        status_element = loc.select_one('.status')
+                        status_text = status_element.text.strip() if status_element else ""
+                        is_open = "Open" in status_text
+
                         self.locations[title].open_today = is_open
                         self.locations[title].open_times = open_times
 
@@ -203,7 +225,7 @@ class ColumbiaDiningScraper:
                             print(f"Location {title} is closed")
 
                 except Exception as e:
-                    print(f"Error processing location: {e}")
+                    print(f"Error processing location {title}: {e}")
                     continue
 
             # Scrape menus for open locations
@@ -213,123 +235,104 @@ class ColumbiaDiningScraper:
 
         except Exception as e:
             print(f"Error during scraping: {e}")
+            print(traceback.format_exc())
             raise
+
     def _scrape_location_menu(self, location: DiningLocation):
         """Scrape menu for a specific location."""
-        print(f"\nScraping menu for {location.name}")
-        
+        print(f"Scraping menu for {location.name}")
+
         try:
-            html_content = self._fetch_page_html(location.url)
-            soup = BeautifulSoup(html_content, 'html.parser')
+            for meal_type in location.menus.keys():
+                print(f"Processing meal type: {meal_type}")
 
-            # Debug print the full HTML to understand the structure
-            print("Full page HTML:")
-            print(soup.prettify()[:2000])  # First 2000 chars to see the structure
+                # JavaScript to click the button with innerText matching meal_type
+                # The buttons have attribute data-ng-click="setMenu(menu)"
+                js_click_button = f"""
+                    var buttons = document.querySelectorAll('button[data-ng-click="setMenu(menu)"]');
+                    for (var i = 0; i < buttons.length; i++) {{
+                        if (buttons[i].innerText.trim() === '{meal_type}') {{
+                            buttons[i].click();
+                            break;
+                        }}
+                    }}
+                """
 
-            # Look for the menu container
-            menu_container = soup.select_one('.menu-items-wrapper, .dining-menu-wrapper, .location-menu')
-            if not menu_container:
-                print("No menu container found, trying alternative selectors")
-                menu_container = soup.select_one('[class*="menu"]')  # More permissive selector
+                browser_commands = [
+                    {"command": "waitForElement", "selector": "button[data-ng-click='setMenu(menu)']", "timeout": 5000},
+                    {"command": "evaluate", "expression": js_click_button},
+                    {"command": "wait", "timeout": 2000}
+                ]
 
-            if not menu_container:
-                print(f"No menu content found for {location.name}")
-                return
+                html_content = self._fetch_page_html(location.url, browser_commands=browser_commands)
+                soup = BeautifulSoup(html_content, 'html.parser')
 
-            # Get all menu sections
-            menu_sections = menu_container.select('.meal-period, .menu-section, [class*="meal"]')
-            print(f"Found {len(menu_sections)} menu sections")
-
-            for section in menu_sections:
-                # Try to determine the meal type from various possible elements
-                meal_type = None
-                meal_header = section.select_one('.meal-period-header, .menu-header, h2, h3')
-                if meal_header:
-                    meal_type = meal_header.text.strip()
-                    print(f"Found meal type: {meal_type}")
-
-                # If we can't determine the meal type, try the section's class or data attributes
-                if not meal_type:
-                    for attr in section.attrs.get('class', []):
-                        if 'breakfast' in attr.lower():
-                            meal_type = 'Breakfast'
-                        elif 'lunch' in attr.lower():
-                            meal_type = 'Lunch'
-                        elif 'dinner' in attr.lower():
-                            meal_type = 'Dinner'
-                        elif 'late' in attr.lower():
-                            meal_type = 'Late Night'
-
-                # Map the found meal type to our expected meal types
-                mapped_meal_type = None
-                for expected_type in location.menus.keys():
-                    if meal_type and (expected_type.lower() in meal_type.lower() or 
-                                    meal_type.lower() in expected_type.lower()):
-                        mapped_meal_type = expected_type
-                        break
-
-                if not mapped_meal_type:
-                    print(f"Could not map found meal type '{meal_type}' to expected types")
+                # Find all menu sections for this meal type
+                menu_divs = soup.find_all('div', class_='menus')
+                if not menu_divs:
+                    print(f"Warning: No menu items found for {meal_type} at {location.name}")
                     continue
 
-                print(f"Processing mapped meal type: {mapped_meal_type}")
+                print(f"Found {len(menu_divs)} menu sections for {meal_type} at {location.name}")
 
-                # Find all stations in this section
-                stations = section.select('.station-wrapper, .station, [class*="station"]')
-                print(f"Found {len(stations)} stations")
+                for menu_div in menu_divs:
+                    # For each station in this menu
+                    station_divs = menu_div.find_all('div', class_='wrapper')
+                    for station_div in station_divs:
+                        # Get station name
+                        station_name_element = station_div.find('h2', class_='station-title')
+                        station_name = station_name_element.text.strip() if station_name_element else "Unknown Station"
+                        print(f"Processing station: {station_name}")
 
-                for station in stations:
-                    station_title = station.select_one('.station-title, .station-name, h3, h4')
-                    if not station_title:
-                        continue
-                        
-                    station_name = station_title.text.strip()
-                    print(f"Processing station: {station_name}")
+                        # Get meal items
+                        meal_items_div = station_div.find('div', class_='meal-items')
+                        if not meal_items_div:
+                            print(f"No meal items found for station {station_name}")
+                            continue
 
-                    if station_name not in location.menus[mapped_meal_type]:
-                        location.menus[mapped_meal_type][station_name] = {}
+                        meal_item_divs = meal_items_div.find_all('div', class_='meal-item')
+                        print(f"Found {len(meal_item_divs)} meal items in station {station_name}")
 
-                    # Look for menu items with more flexible selectors
-                    meal_items = station.select('.meal-item, .menu-item, [class*="item"]')
-                    print(f"Found {len(meal_items)} items in station {station_name}")
-
-                    for meal_item in meal_items:
-                        menu_item = self._parse_menu_item(meal_item)
-                        if menu_item.title != "Unknown":  # Only add if we successfully parsed the item
-                            location.menus[mapped_meal_type][station_name][menu_item.title] = menu_item
+                        for item_element in meal_item_divs:
+                            menu_item = self._parse_menu_item(item_element)
+                            if menu_item.title != "Unknown":
+                                # Initialize the station dictionary if not present
+                                if station_name not in location.menus[meal_type]:
+                                    location.menus[meal_type][station_name] = {}
+                                # Add the menu item to the station
+                                location.menus[meal_type][station_name][menu_item.title] = menu_item
 
         except Exception as e:
             print(f"Error scraping menu for {location.name}: {e}")
             print(traceback.format_exc())
 
     def _parse_menu_item(self, meal_item_element) -> MenuItem:
-        """Parse a menu item from BeautifulSoup element with more flexible selectors."""
+        """Parse a menu item from BeautifulSoup element."""
         try:
-            # Try multiple selectors for the title
-            title_element = (meal_item_element.select_one('.meal-title, .item-title, .name, h4, strong') or 
-                            meal_item_element.find(['h4', 'strong', 'span']))
+            # Extract title
+            title_element = meal_item_element.find('h5', class_='meal-title')
             title = title_element.text.strip() if title_element else "Unknown"
             print(f"Found title: {title}")
-            
-            # Try multiple selectors for dietary information
-            dietary_elements = meal_item_element.select('.dietary, .meal-prefs, [class*="dietary"], [class*="pref"]')
-            dietary_text = ' '.join(elem.text.strip() for elem in dietary_elements)
-            print(f"Found dietary text: {dietary_text}")
-            
-            # More flexible dietary checking
-            is_vegetarian = any(marker in dietary_text.lower() 
-                            for marker in ['vegetarian', 'vegan', 'plant-based'])
-            is_vegan = 'vegan' in dietary_text.lower()
-            is_halal = 'halal' in dietary_text.lower()
 
-            # Try multiple selectors for allergens
+            # Extract dietary info
+            dietary_info_element = meal_item_element.find('div', class_='meal-prefs')
+            dietary_text = dietary_info_element.text.strip() if dietary_info_element else ""
+            print(f"Found dietary text: {dietary_text}")
+
+            is_vegetarian = 'Vegetarian' in dietary_text
+            is_vegan = 'Vegan' in dietary_text
+            is_halal = 'Halal' in dietary_text
+
+            # Extract allergens
+            allergens_info_element = meal_item_element.find('div', class_='meal-allergens')
+            allergens_text = allergens_info_element.text.strip() if allergens_info_element else ""
+            print(f"Found allergens text: {allergens_text}")
+
+            # Extract allergens list
             allergens = []
-            allergen_elements = meal_item_element.select('.allergens, .contains, em, [class*="allerg"]')
-            for elem in allergen_elements:
-                text = elem.text.strip()
-                if 'contains' in text.lower():
-                    allergens = [a.strip() for a in text.split('Contains:')[1].split(',')]
-                    break
+            if 'Contains:' in allergens_text:
+                allergens_text = allergens_text.replace('Contains:', '').strip()
+                allergens = [a.strip() for a in allergens_text.split(',')]
 
             menu_item = MenuItem(
                 title=title,
@@ -340,7 +343,7 @@ class ColumbiaDiningScraper:
             )
             print(f"Created MenuItem: {vars(menu_item)}")
             return menu_item
-            
+
         except Exception as e:
             print(f"Error parsing menu item: {e}")
             print(traceback.format_exc())
