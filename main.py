@@ -1,26 +1,35 @@
+
 import json
 import boto3
 from datetime import datetime
 from typing import Dict, List
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from dataclasses import dataclass
-import requests
-from bs4 import BeautifulSoup
+from tempfile import mkdtemp
+import time
 import logging
-from dotenv import load_dotenv
-import traceback
 import random
-import os
+import os 
+import subprocess
+import socket
+import resource
 
-load_dotenv()
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Initialize AWS services
+# Initialize AWS stuff
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
 ses = boto3.client('ses', region_name='us-east-1')
 users_table = dynamodb.Table('users')
 
+#classes
 @dataclass
 class MenuItem:
     title: str
@@ -37,138 +46,281 @@ class DiningLocation:
     open_today: bool = False
     open_times: str = ""
 
+
+
+def initialize_driver():
+    print('Initializing driver')
+    # Set Chrome binary location
+    options = webdriver.ChromeOptions()
+
+    #COMMENT THESE LINES TO RUN LOCALLY
+    # service = Service("/opt/chromedriver")
+    # options.add_argument("--single-process")
+    # options.add_argument("--disable-dev-tools")
+    # options.binary_location = '/opt/chrome/chrome'
+
+    # UNCOMMENT TO RUN LOCALLY
+
+    service = Service('/opt/homebrew/bin/chromedriver')
+    options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+    # Absolute minimum required options for Lambda
+    # options.add_argument("--headless=new")
+    options.add_argument('--no-sandbox')
+    options.add_argument("--disable-gpu")
+
+    options.add_argument("--disable-dev-shm-usage")
+
+    options.add_argument("--no-zygote")
+    options.add_argument(f"--user-data-dir={mkdtemp()}")
+    options.add_argument(f"--data-path={mkdtemp()}")
+    options.add_argument(f"--disk-cache-dir={mkdtemp()}")
+    options.add_argument("--remote-debugging-port=9222")
+
+
+    # Add these options specifically for content loading
+    options.add_argument('--disable-notifications')
+    options.add_argument('--disable-infobars')
+    options.add_argument('--enable-javascript')  # Explicitly enable JavaScript
+    options.add_argument('--window-size=1920,1080')  # Set a proper window size
+    
+    # Don't disable images as they might be needed for page load detection
+    options.page_load_strategy = 'normal'  # Use 'normal' instead of 'eager'
+    
+
+
+    chrome = None
+    try:
+        # Initialize ChromeDriver with options and service
+        chrome = webdriver.Chrome(options=options, service=service)
+        print("Chrome browser started")
+        
+        # Set page load timeout
+        chrome.set_page_load_timeout(20)
+        print(f"Chrome version: {chrome.capabilities['browserVersion']}")
+        print(f"ChromeDriver version: {chrome.capabilities['chrome']['chromedriverVersion']}")
+
+        return chrome
+    
+    except Exception as e:
+        print(f"Chrome initialization error: {str(e)}")
+        print(f"Chrome binary location: {options.binary_location}")
+        print(f"ChromeDriver path: {service.path}")
+        raise Exception(f"Failed to start Chrome browser: {str(e)}")  
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
-    
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.subjects = [
-            'Wake up fucker!!!!', 'rise and shine bitchboy', 'Good morning big back', 
-            "Hola papi <3333", "Ohaiyo onii-chan", "pls text back the kids miss you", 
-            "Get out of bed; they're not texting you back", "Another morning spent single! Here's the menus",
-            "You're never getting married. Here's the menus", "om nom nom nom", 
-            "hello my sweet darling... wake up", "menus are out!",
-            "joonha if you're reading this, please text me back"
-        ]
+    TIMEOUT = 10
+
+    def __init__(self):
+        self.driver = initialize_driver()
+        self.subjects=['Wake up fucker!!!!', 'rise and shine bitchboy', 'Good morning big back', "Hola papi <3333", "Ohaiyo onii-chan", "pls text back the kids miss you", "Get out of bed; they're not texting you back", "Another morning spent single! Here's the menus", "You're never getting married. Here's the menus", "om nom nom nom", "hello my sweet darling... wake up", "menus are out!","joonha if you're reading this, please text me back"]
         self.closed_locations = []
-        # Dictionary of all possible locations
+        # Dictionary of all possible locations, including those without menus
         self.locations: Dict[str, DiningLocation] = {
-        'John Jay Dining Hall': DiningLocation(
-            name='John Jay Dining Hall',
-            url='https://dining.columbia.edu/content/john-jay-dining-hall',
-            menus={
-                'Brunch': {},
-                'Dinner': {},
-                'Lunch & Dinner': {}
-            }
-        ),
-        "JJ's Place": DiningLocation(
-            name="JJ's Place",
-            url='https://dining.columbia.edu/content/jjs-place-0',
-            menus={
-                'Daily': {},
-                'Late Night': {},
-                'Breakfast': {}
-            }
-        ),
-        'Ferris Booth Commons': DiningLocation(
-            name='Ferris Booth Commons',
-            url='https://dining.columbia.edu/content/ferris-booth-commons-0',
-            menus={
-                'Breakfast': {},
-                'Lunch': {},
-                'Dinner': {},
-                'Lunch & Dinner': {}
-            }
-        ),
-        'Faculty House': DiningLocation(
-            name='Faculty House',
-            url='https://dining.columbia.edu/content/faculty-house-0',
-            menus={
-                'Lunch': {}
-            }
-        ),
-        'The Fac Shack': DiningLocation(
-            name='The Fac Shack',
-            url='https://dining.columbia.edu/content/fac-shack',
-            menus={
-                'Dinner': {}
-            }
-        ),
-        'Blue Java Café - Butler Library': DiningLocation(
-            name='Blue Java Café - Butler Library',
-            url='https://dining.columbia.edu/content/blue-java-cafe-butler-library',
-            menus={}
-        ),
-        "Chef Mike's Sub Shop": DiningLocation(
-            name="Chef Mike's Sub Shop",
-            url='https://dining.columbia.edu/content/chef-mikes-sub-shop',
-            menus={}
-        ),
-        "Chef Don's Pizza Pi": DiningLocation(
-            name="Chef Don's Pizza Pi",
-            url='https://dining.columbia.edu/content/chef-dons-pizza-pi',
-            menus={}
-        ),
-        'Grace Dodge Dining Hall': DiningLocation(
-            name='Grace Dodge Dining Hall',
-            url='https://dining.columbia.edu/content/grace-dodge-dining-hall',
-            menus={}
-        ),
-        'Robert F. Smith Dining Hall': DiningLocation(
-            name='Robert F. Smith Dining Hall',
-            url='https://dining.columbia.edu/content/robert-f-smith-dining-hall',
-            menus={}
-        ),
-        'Blue Java Café - Mudd Hall': DiningLocation(
-            name='Blue Java Café - Mudd Hall',
-            url='https://dining.columbia.edu/content/blue-java-cafe-mudd-hall',
-            menus={}
-        ),
-        'Blue Java Café - Uris': DiningLocation(
-            name='Blue Java Café - Uris',
-            url='https://dining.columbia.edu/content/blue-java-cafe-uris',
-            menus={}
-        ),
-        'Blue Java at Everett Library Café': DiningLocation(
-            name='Blue Java at Everett Library Café',
-            url='https://dining.columbia.edu/content/blue-java-everett-library-cafe',
-            menus={}
-        ),
-        'Lenfest Café': DiningLocation(
-            name='Lenfest Café',
-            url='https://dining.columbia.edu/content/lenfest-cafe',
-            menus={}
-        )
-    }
-
-
-    def _fetch_page_html(self, url: str) -> str:
-        """Fetch page HTML using Zyte API."""
-        try:
-            response = requests.post(
-                "https://api.zyte.com/v1/extract",
-                auth=(self.api_key, ""),
-                json={
-                    "url": url,
-                    "browserHtml": True,
+            'John Jay Dining Hall': DiningLocation(
+                name='John Jay Dining Hall',
+                url='https://dining.columbia.edu/content/john-jay-dining-hall',
+                menus={
+                    'Brunch': {},
+                    'Dinner': {},
+                    'Lunch & Dinner': {}
                 }
+            ),
+            "JJ's Place": DiningLocation(
+                name="JJ's Place",
+                url='https://dining.columbia.edu/content/jjs-place-0',
+                menus={
+                    'Daily': {},
+                    'Late Night': {},
+                    'Breakfast': {}
+                }
+            ),
+            'Ferris Booth Commons': DiningLocation(
+                name='Ferris Booth Commons',
+                url='https://dining.columbia.edu/content/ferris-booth-commons-0',
+                menus={
+                    'Breakfast': {},
+                    'Lunch': {},
+                    'Dinner': {},
+                    'Lunch & Dinner': {}
+                }
+            ),
+            'Faculty House': DiningLocation(
+                name='Faculty House',
+                url='https://dining.columbia.edu/content/faculty-house-0',
+                menus={
+                    'Lunch': {}
+                }
+            ),
+            'The Fac Shack': DiningLocation(
+                name='The Fac Shack',
+                url='https://dining.columbia.edu/content/fac-shack',
+                menus={
+                    'Dinner': {}
+                }
+            ),
+            'Blue Java Café - Butler Library': DiningLocation(
+                name='Blue Java Café - Butler Library',
+                url='https://dining.columbia.edu/content/blue-java-cafe-butler-library',
+                menus={}
+            ),
+            "Chef Mike's Sub Shop": DiningLocation(
+                name="Chef Mike's Sub Shop",
+                url='https://dining.columbia.edu/content/chef-mikes-sub-shop',
+                menus={}
+            ),
+            "Chef Don's Pizza Pi": DiningLocation(
+                name="Chef Don's Pizza Pi",
+                url='https://dining.columbia.edu/content/chef-dons-pizza-pi',
+                menus={}
+            ),
+            'Grace Dodge Dining Hall': DiningLocation(
+                name='Grace Dodge Dining Hall',
+                url='https://dining.columbia.edu/content/grace-dodge-dining-hall',
+                menus={}
+            ),
+            'Robert F. Smith Dining Hall': DiningLocation(
+                name='Robert F. Smith Dining Hall',
+                url='https://dining.columbia.edu/content/robert-f-smith-dining-hall',
+                menus={}
+            ),
+            'Blue Java Café - Mudd Hall': DiningLocation(
+                name='Blue Java Café - Mudd Hall',
+                url='https://dining.columbia.edu/content/blue-java-cafe-mudd-hall',
+                menus={}
+            ),
+            'Blue Java Café - Uris': DiningLocation(
+                name='Blue Java Café - Uris',
+                url='https://dining.columbia.edu/content/blue-java-cafe-uris',
+                menus={}
+            ),
+            'Blue Java at Everett Library Café': DiningLocation(
+                name='Blue Java at Everett Library Café',
+                url='https://dining.columbia.edu/content/blue-java-everett-library-cafe',
+                menus={}
+            ),
+            'Lenfest Café': DiningLocation(
+                name='Lenfest Café',
+                url='https://dining.columbia.edu/content/lenfest-cafe',
+                menus={}
             )
-            response.raise_for_status()
-            return response.json()["browserHtml"]
-        except Exception as e:
-            logger.error(f"Error fetching page {url}: {e}")
-            raise
+        }
 
+
+
+    def _wait_and_find_element(self, by: By, value: str, timeout: int = TIMEOUT):
+        """Wait for and return an element."""
+        try:
+            return WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_element_located((by, value))
+            )
+        except TimeoutException:
+            logger.warning(f"Timeout waiting for element: {value}")
+            return None
+
+    def _click_view_more(self):
+        """Click the 'View More' button and wait for additional locations to load."""
+        try:
+            print("Looking for 'View More' button...")
+            
+            # Wait for page to be fully loaded
+            time.sleep(2)
+            
+            # Try to find the button with different selectors
+            selectors = [
+                '.show-all-dinings',
+                'button.show-all-dinings',
+                '.show-all-locations',
+                'button.show-all-locations',
+                'button[onclick*="show-all"]'
+            ]
+            
+            view_more_button = None
+            for selector in selectors:
+                try:
+                    view_more_button = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
+                    if view_more_button:
+                        print(f"Found button with selector: {selector}")
+                        break
+                except TimeoutException:
+                    continue
+            
+            if not view_more_button:
+                print("Could not find 'View More' button with any selector")
+                # Take screenshot for debugging
+                self.driver.save_screenshot('/tmp/before_click.png')
+                print("Saved screenshot to /tmp/before_click.png")
+                return False
+            
+            # Scroll the button into view
+            self.driver.execute_script("arguments[0].scrollIntoView(true);", view_more_button)
+            time.sleep(1)  # Wait after scroll
+            
+            # Try different click methods
+            try:
+                view_more_button.click()
+            except Exception as e:
+                print(f"Regular click failed: {e}, trying JavaScript click")
+                self.driver.execute_script("arguments[0].click();", view_more_button)
+            
+            # Wait for new content to load
+            time.sleep(3)
+            
+            print("Successfully clicked 'View More' button")
+            return True
+            
+        except TimeoutException:
+            print("'View More' button not found or not clickable (timeout)")
+            return False
+        except Exception as e:
+            print(f"Error clicking 'View More' button: {e}")
+            return False
     def scrape_locations(self):
         """Scrape all dining locations and their menus."""
         try:
             print("Starting to scrape locations")
-            html_content = self._fetch_page_html(self.BASE_URL)
-            soup = BeautifulSoup(html_content, 'html.parser')
-
+            self.driver.get(self.BASE_URL)
+            
+            # Add initial wait for page load
+            print("Waiting for page to load...")
+            time.sleep(3)  # Initial wait for page load
+            
+            # Wait for any dynamic content to load
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '.dining-location, .retail-location'))
+                )
+                print("Initial content loaded")
+            except TimeoutException:
+                print("Timeout waiting for initial content")
+                raise
+            
+            # Click the "View More" button to show all locations
+            retry_count = 0
+            max_retries = 3
+            while retry_count < max_retries:
+                if self._click_view_more():
+                    print("Successfully expanded locations")
+                    break
+                print(f"Retry {retry_count + 1} of {max_retries} for expanding locations")
+                time.sleep(2)
+                retry_count += 1
+            
+            # Additional wait after expanding
+            time.sleep(3)
+            
             # Find all dining and retail locations
-            all_locations = soup.select('.dining-location, .retail-location')
+            dining_locations = self.driver.find_elements(
+                By.CSS_SELECTOR, 
+                '.dining-location'
+            )
+            retail_locations = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                '.retail-location'
+            )
+            all_locations = dining_locations + retail_locations
             print(f"Found {len(all_locations)} locations")
 
             # Reset closed locations list
@@ -177,179 +329,143 @@ class ColumbiaDiningScraper:
             # Process each location
             for loc in all_locations:
                 try:
-                    title_element = loc.select_one('.name a')
+                    # Find the location title using the link element
+                    title_element = loc.find_element(By.CSS_SELECTOR, '.name a')
                     if not title_element:
                         continue
-
+                    
                     title = title_element.text.strip()
-                    if not title:
+                    
+                    if not title:  # Skip if title is empty
                         continue
-
-                    print(f"Processing location: {title}")
-
-                    if title in self.locations:
-                        # Check if location is open
-                        open_time_element = loc.select_one('.open-time')
-                        open_times = open_time_element.text.strip() if open_time_element else ""
                         
-                        is_open = bool(open_times)
-                        self.locations[title].open_today = is_open
-                        self.locations[title].open_times = open_times
-
-                        if is_open:
-                            print(f"Location {title} is open: {open_times}")
-                        else:
+                    print(f"Processing location: {title}")
+                
+                    
+                    # Check if location is in our tracking list
+                    if title in self.locations:
+                        # Check if the location is open by looking for open-time with content
+                        try:
+                            open_time_element = loc.find_element(By.CSS_SELECTOR, '.open-time')
+                            open_times = open_time_element.text.strip() if open_time_element else ""
+                            
+                            # A location is considered open if it has open times
+                            is_open = bool(open_times)
+                            
+                            # Update location status
+                            self.locations[title].open_today = is_open
+                            self.locations[title].open_times = open_times
+                            
+                            if is_open:
+                                print(f"Location {title} is open: {open_times}")
+                            else:
+                                self.closed_locations.append(title)
+                                print(f"Location {title} is closed")
+                            
+                        except NoSuchElementException:
+                            # No open time element found - location is closed
+                            self.locations[title].open_today = False
+                            self.locations[title].open_times = ""
                             self.closed_locations.append(title)
-                            print(f"Location {title} is closed")
+                            print(f"Location {title} is closed (no open times found)")
+                    else:
+                        print(f"Warning: Found location '{title}' on website that isn't in our tracking list")
 
-                except Exception as e:
+                except NoSuchElementException as e:
                     print(f"Error processing location: {e}")
                     continue
+                except Exception as e:
+                    print(f"Unexpected error processing location: {e}")
+                    continue
 
-            # Scrape menus for open locations
+            # Scrape menus for open locations that have menu configurations
             for location in self.locations.values():
                 if location.open_today and location.menus:
                     self._scrape_location_menu(location)
-
+            print("Current URL:", self.driver.current_url)
+            print("Page source:", self.driver.page_source[:1000])  # First 1000 chars
         except Exception as e:
             print(f"Error during scraping: {e}")
+            # Add more detailed error information
+            print("Current URL:", self.driver.current_url)
+            print("Page source:", self.driver.page_source[:1000])  # First 1000 chars
             raise
+        finally:
+            if self.driver:
+                self.driver.quit()
+
     def _scrape_location_menu(self, location: DiningLocation):
         """Scrape menu for a specific location."""
-        print(f"\nScraping menu for {location.name}")
-        
+        print(f"Scraping menu for {location.name}")
+        self.driver.get(location.url)
+
         try:
-            html_content = self._fetch_page_html(location.url)
-            soup = BeautifulSoup(html_content, 'html.parser')
-
-            # Debug print the full HTML to understand the structure
-            print("Full page HTML:")
-            print(soup.prettify()[:2000])  # First 2000 chars to see the structure
-
-            # Look for the menu container
-            menu_container = soup.select_one('.menu-items-wrapper, .dining-menu-wrapper, .location-menu')
-            if not menu_container:
-                print("No menu container found, trying alternative selectors")
-                menu_container = soup.select_one('[class*="menu"]')  # More permissive selector
-
-            if not menu_container:
-                print(f"No menu content found for {location.name}")
+            menu_tabs = self._wait_and_find_element(By.CSS_SELECTOR, '.cu-dining-menu-tabs')
+            if not menu_tabs:
                 return
 
-            # Get all menu sections
-            menu_sections = menu_container.select('.meal-period, .menu-section, [class*="meal"]')
-            print(f"Found {len(menu_sections)} menu sections")
+            for meal_type in location.menus.keys():
+                try:
+                    button = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable(
+                            (By.XPATH, f"//button[text()='{meal_type}' and contains(@class, 'ng-binding')]")
+                        )
+                    )
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", button)
+                    self.driver.execute_script("arguments[0].click();", button)
+                    time.sleep(1)
 
-            for section in menu_sections:
-                # Try to determine the meal type from various possible elements
-                meal_type = None
-                meal_header = section.select_one('.meal-period-header, .menu-header, h2, h3')
-                if meal_header:
-                    meal_type = meal_header.text.strip()
-                    print(f"Found meal type: {meal_type}")
+                    stations = self.driver.find_elements(By.XPATH, ".//div[div[contains(@class, 'meal-items')]]")
+                    for station in stations:
+                        station_name = station.find_element(By.CSS_SELECTOR, '.station-title').text
+                        if station_name not in location.menus[meal_type]:
+                            location.menus[meal_type][station_name] = {}
 
-                # If we can't determine the meal type, try the section's class or data attributes
-                if not meal_type:
-                    for attr in section.attrs.get('class', []):
-                        if 'breakfast' in attr.lower():
-                            meal_type = 'Breakfast'
-                        elif 'lunch' in attr.lower():
-                            meal_type = 'Lunch'
-                        elif 'dinner' in attr.lower():
-                            meal_type = 'Dinner'
-                        elif 'late' in attr.lower():
-                            meal_type = 'Late Night'
+                        meal_items = station.find_elements(By.CSS_SELECTOR, '.meal-item')
+                        for meal_item in meal_items:
+                            menu_item = self._parse_menu_item(meal_item)
+                            location.menus[meal_type][station_name][menu_item.title] = menu_item
 
-                # Map the found meal type to our expected meal types
-                mapped_meal_type = None
-                for expected_type in location.menus.keys():
-                    if meal_type and (expected_type.lower() in meal_type.lower() or 
-                                    meal_type.lower() in expected_type.lower()):
-                        mapped_meal_type = expected_type
-                        break
-
-                if not mapped_meal_type:
-                    print(f"Could not map found meal type '{meal_type}' to expected types")
+                except TimeoutException:
+                    logger.debug(f"No {meal_type} menu found for {location.name}")
                     continue
-
-                print(f"Processing mapped meal type: {mapped_meal_type}")
-
-                # Find all stations in this section
-                stations = section.select('.station-wrapper, .station, [class*="station"]')
-                print(f"Found {len(stations)} stations")
-
-                for station in stations:
-                    station_title = station.select_one('.station-title, .station-name, h3, h4')
-                    if not station_title:
-                        continue
-                        
-                    station_name = station_title.text.strip()
-                    print(f"Processing station: {station_name}")
-
-                    if station_name not in location.menus[mapped_meal_type]:
-                        location.menus[mapped_meal_type][station_name] = {}
-
-                    # Look for menu items with more flexible selectors
-                    meal_items = station.select('.meal-item, .menu-item, [class*="item"]')
-                    print(f"Found {len(meal_items)} items in station {station_name}")
-
-                    for meal_item in meal_items:
-                        menu_item = self._parse_menu_item(meal_item)
-                        if menu_item.title != "Unknown":  # Only add if we successfully parsed the item
-                            location.menus[mapped_meal_type][station_name][menu_item.title] = menu_item
 
         except Exception as e:
             print(f"Error scraping menu for {location.name}: {e}")
-            print(traceback.format_exc())
 
-    def _parse_menu_item(self, meal_item_element) -> MenuItem:
-        """Parse a menu item from BeautifulSoup element with more flexible selectors."""
+    def _parse_menu_item(self, meal_item) -> MenuItem:
+        """Parse a menu item element and return MenuItem object."""
+        title = meal_item.find_element(By.CSS_SELECTOR, '.meal-title').text
+
+        # Parse dietary information
+        dietary_info = {'is_vegetarian': False, 'is_vegan': False, 'is_halal': False}
         try:
-            # Try multiple selectors for the title
-            title_element = (meal_item_element.select_one('.meal-title, .item-title, .name, h4, strong') or 
-                            meal_item_element.find(['h4', 'strong', 'span']))
-            title = title_element.text.strip() if title_element else "Unknown"
-            print(f"Found title: {title}")
-            
-            # Try multiple selectors for dietary information
-            dietary_elements = meal_item_element.select('.dietary, .meal-prefs, [class*="dietary"], [class*="pref"]')
-            dietary_text = ' '.join(elem.text.strip() for elem in dietary_elements)
-            print(f"Found dietary text: {dietary_text}")
-            
-            # More flexible dietary checking
-            is_vegetarian = any(marker in dietary_text.lower() 
-                            for marker in ['vegetarian', 'vegan', 'plant-based'])
-            is_vegan = 'vegan' in dietary_text.lower()
-            is_halal = 'halal' in dietary_text.lower()
+            dietary_text = meal_item.find_element(By.CSS_SELECTOR, 'div.meal-prefs strong').text
+            dietary_info = {
+                'is_vegetarian': "Vegetarian" in dietary_text or "Vegan" in dietary_text,
+                'is_vegan': "Vegan" in dietary_text,
+                'is_halal': "Halal" in dietary_text
+            }
+        except NoSuchElementException:
+            pass
 
-            # Try multiple selectors for allergens
-            allergens = []
-            allergen_elements = meal_item_element.select('.allergens, .contains, em, [class*="allerg"]')
-            for elem in allergen_elements:
-                text = elem.text.strip()
-                if 'contains' in text.lower():
-                    allergens = [a.strip() for a in text.split('Contains:')[1].split(',')]
-                    break
+        # Parse allergens
+        allergens = []
+        try:
+            allergens_text = meal_item.find_element(By.TAG_NAME, 'em').text
+            if "Contains: " in allergens_text:
+                allergens = allergens_text.split("Contains: ")[1].split(", ")
+        except NoSuchElementException:
+            pass
 
-            menu_item = MenuItem(
-                title=title,
-                allergens=allergens,
-                is_vegetarian=is_vegetarian,
-                is_vegan=is_vegan,
-                is_halal=is_halal
-            )
-            print(f"Created MenuItem: {vars(menu_item)}")
-            return menu_item
-            
-        except Exception as e:
-            print(f"Error parsing menu item: {e}")
-            print(traceback.format_exc())
-            return MenuItem(title="Unknown", allergens=[])
-
+        return MenuItem(
+            title=title,
+            allergens=allergens,
+            **dietary_info
+        )
 
     def format_menu_for_user(self, user: Dict, locations: Dict[str, DiningLocation]) -> List[Dict]:
         """Format menu data according to user preferences."""
-        # [This method remains exactly the same as it doesn't involve scraping]
         formatted_locations = []
         
         for location_name, location in locations.items():
@@ -426,14 +542,13 @@ class ColumbiaDiningScraper:
         try:
             template_data = {
                 "date": datetime.now().strftime("%A, %B %d, %Y"),
-                "subject": random.choice(self.subjects),
+                "subject": random.choice(self.subjects),  # Pick a random subject
                 "locations": formatted_menu,
                 "closed_locations": self.closed_locations
             }
             print("Template data", template_data)
-            
             response = ses.send_templated_email(
-                Source='roy@cudiningnotifications.com',
+                Source='roy@cudiningnotifications.com',  # Make sure this email is verified in SES
                 Destination={
                     'ToAddresses': [user_email]
                 },
@@ -447,9 +562,24 @@ class ColumbiaDiningScraper:
             raise
 
 def lambda_handler(event, context):
-    successful_sends = []
     try:
-        scraper = ColumbiaDiningScraper(api_key=os.getenv('ZYTE_API_KEY'))
+        socket.gethostbyname('dining.columbia.edu')
+        print("DNS resolution successful")
+    except Exception as e:
+        print(f"DNS resolution failed: {e}")
+    
+    try:
+        chrome_path = subprocess.check_output("find /opt /usr -name chrome", shell=True).decode()
+        chromedriver_path = subprocess.check_output("find /opt /usr -name chromedriver", shell=True).decode()
+        logger.info(f"Chrome path:\n{chrome_path}")
+        logger.info(f"Chromedriver path:\n{chromedriver_path}")
+    except Exception as e:
+        print(f"Error finding Chrome or Chromedriver: {e}")
+    successful_sends=[]
+    try:
+        
+        # Initialize scraper
+        scraper = ColumbiaDiningScraper()
         
         # Scrape all locations
         scraper.scrape_locations()
@@ -459,52 +589,22 @@ def lambda_handler(event, context):
         users = response['Items']
         print(f"Found {len(users)} users")
         
-        # Debug print of locations data
-        print("Locations data:")
-        for loc_name, loc_data in scraper.locations.items():
-            print(f"\nLocation: {loc_name}")
-            print(f"Open today: {loc_data.open_today}")
-            print(f"Open times: {loc_data.open_times}")
-            print("Menus:")
-            for meal_type, stations in loc_data.menus.items():
-                print(f"  {meal_type}: {len(stations)} stations")
-                for station_name, items in stations.items():
-                    print(f"    {station_name}: {len(items)} items")
-
         # Process menu for each user and send email
         for user in users:
-            print(f"\nProcessing user: {user.get('email')}")
-            print(f"User preferences: {json.dumps(user, indent=2)}")
-            
             formatted_menu = scraper.format_menu_for_user(user, scraper.locations)
-            print(f"Formatted menu items: {len(formatted_menu)}")
-            
-            if formatted_menu:
-                print("Menu content:")
-                print(json.dumps(formatted_menu, indent=2))
-                
-                try:
-                    scraper.send_email(user['email'], formatted_menu)
-                    successful_sends.append(user['email'])
-                    print(f"Successfully sent email to {user['email']}")
-                except Exception as email_error:
-                    print(f"Error sending email to {user['email']}: {str(email_error)}")
-            else:
-                print(f"No matching menu items found for user {user['email']}")
+            if formatted_menu:  # Only send email if there are matching menu items
+                scraper.send_email(user['email'], formatted_menu)
+                successful_sends.append(user['email'])
         
-        print(f"\nSuccessful sends: {successful_sends}")
         return {
             'statusCode': 200,
-            'body': json.dumps({
-                'message': 'Process completed',
-                'successful_sends': successful_sends,
-                'total_users': len(users)
-            })
+            'body': json.dumps('Emails sent successfully')
         }
         
     except Exception as e:
         print(f"Error in lambda execution: {e}")
-
+        # Print full traceback for debugging
+        import traceback
         print("Full traceback:")
         print(traceback.format_exc())
         return {
@@ -514,17 +614,9 @@ def lambda_handler(event, context):
                 'traceback': traceback.format_exc()
             })
         }
-if __name__ == "__main__":
-    lambda_handler(None, None)
 
+lambda_handler(None, None)
 
-#random bash script to move the chromedriver to the right place in the ec2 instance.
-
-    # cd /tmp/
-    # sudo wget https://chromedriver.storage.googleapis.com/80.0.3987.106/chromedriver_linux64.zip
-    # sudo unzip chromedriver_linux64.zip
-    # sudo mv chromedriver /usr/bin/chromedriver
-    # chromedriver --version
 
 
 
