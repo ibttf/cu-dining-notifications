@@ -46,20 +46,19 @@ def initialize_driver():
     try:
         # SeleniumBase Driver with specific capabilities
         driver = Driver(
-            uc=True,  # Using undetected-chromedriver
             headless=True,
             # SeleniumBase-specific arguments
             cap_file=None,
             disable_csp=True,
             enable_sync=False,
             use_auto_ext=False,
-            servername='localhost',
+            # servername='localhost',
             # Additional arguments through the 'agent' parameter
-            agent=("\
-                Mozilla/5.0 (X11; Linux x86_64) \
-                AppleWebKit/537.36 (KHTML, like Gecko) \
-                Chrome/130.0.0.0 Safari/537.36"
-            )
+            # agent=("\
+            #     Mozilla/5.0 (X11; Linux x86_64) \
+            #     AppleWebKit/537.36 (KHTML, like Gecko) \
+            #     Chrome/130.0.0.0 Safari/537.36"
+            # )
         )
         
         # Set timeouts through selenium's standard interface
