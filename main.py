@@ -4,8 +4,7 @@ import boto3
 from datetime import datetime
 from typing import Dict, List
 from seleniumbase import Driver
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-import undetected_chromedriver as uc
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -42,16 +41,41 @@ class DiningLocation:
     open_times: str = ""
 
 
-
 def initialize_driver():
     print('Initializing driver')
-    driver=None
     try:
-        driver = Driver(uc=True, headless=True)
+        # SeleniumBase Driver with specific capabilities
+        driver = Driver(
+            uc=True,  # Using undetected-chromedriver
+            headless=True,
+            # SeleniumBase-specific arguments
+            cap_file=None,
+            disable_csp=True,
+            enable_sync=False,
+            use_auto_ext=False,
+            servername='localhost',
+            # Additional arguments through the 'agent' parameter
+            agent=("\
+                Mozilla/5.0 (X11; Linux x86_64) \
+                AppleWebKit/537.36 (KHTML, like Gecko) \
+                Chrome/130.0.0.0 Safari/537.36"
+            )
+        )
+        
+        # Set timeouts through selenium's standard interface
+        driver.set_script_timeout(30)
+        driver.set_page_load_timeout(30)
+        
+        # Additional SeleniumBase-specific settings
+        driver.implicitly_wait(10)
+        
         return driver
     except Exception as e:
         print(f"Error initializing driver: {e}")
         raise
+
+
+
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
     TIMEOUT = 10
