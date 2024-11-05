@@ -45,9 +45,13 @@ class DiningLocation:
 
 def initialize_driver():
     print('Initializing driver')
-    driver = Driver(uc=True, headless=True)
-    return driver
-
+    driver=None
+    try:
+        driver = Driver(uc=True, headless=True)
+        return driver
+    except Exception as e:
+        print(f"Error initializing driver: {e}")
+        raise
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
     TIMEOUT = 10
