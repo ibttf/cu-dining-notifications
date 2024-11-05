@@ -3,8 +3,9 @@ import json
 import boto3
 from datetime import datetime
 from typing import Dict, List
-from selenium import webdriver
+from seleniumbase import Driver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
+import undetected_chromedriver as uc
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -15,14 +16,8 @@ from tempfile import mkdtemp
 import time
 import logging
 import random
-import os 
-import subprocess
 import socket
-import resource
 
-# Set up logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
 
 # Initialize AWS stuff
 dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
@@ -50,63 +45,9 @@ class DiningLocation:
 
 def initialize_driver():
     print('Initializing driver')
-    # Set Chrome binary location
-    options = webdriver.ChromeOptions()
+    driver = Driver(uc=True, headless=True)
+    return driver
 
-    #COMMENT THESE LINES TO RUN LOCALLY
-    # service = Service("/opt/chromedriver")
-    # options.add_argument("--single-process")
-    # options.add_argument("--disable-dev-tools")
-    # options.binary_location = '/opt/chrome/chrome'
-
-    # UNCOMMENT TO RUN LOCALLY
-
-    service = Service('/opt/homebrew/bin/chromedriver')
-    options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-
-    # Absolute minimum required options for Lambda
-    # options.add_argument("--headless=new")
-    options.add_argument('--no-sandbox')
-    options.add_argument("--disable-gpu")
-
-    options.add_argument("--disable-dev-shm-usage")
-
-    options.add_argument("--no-zygote")
-    options.add_argument(f"--user-data-dir={mkdtemp()}")
-    options.add_argument(f"--data-path={mkdtemp()}")
-    options.add_argument(f"--disk-cache-dir={mkdtemp()}")
-    options.add_argument("--remote-debugging-port=9222")
-
-
-    # Add these options specifically for content loading
-    options.add_argument('--disable-notifications')
-    options.add_argument('--disable-infobars')
-    options.add_argument('--enable-javascript')  # Explicitly enable JavaScript
-    options.add_argument('--window-size=1920,1080')  # Set a proper window size
-    
-    # Don't disable images as they might be needed for page load detection
-    options.page_load_strategy = 'normal'  # Use 'normal' instead of 'eager'
-    
-
-
-    chrome = None
-    try:
-        # Initialize ChromeDriver with options and service
-        chrome = webdriver.Chrome(options=options, service=service)
-        print("Chrome browser started")
-        
-        # Set page load timeout
-        chrome.set_page_load_timeout(20)
-        print(f"Chrome version: {chrome.capabilities['browserVersion']}")
-        print(f"ChromeDriver version: {chrome.capabilities['chrome']['chromedriverVersion']}")
-
-        return chrome
-    
-    except Exception as e:
-        print(f"Chrome initialization error: {str(e)}")
-        print(f"Chrome binary location: {options.binary_location}")
-        print(f"ChromeDriver path: {service.path}")
-        raise Exception(f"Failed to start Chrome browser: {str(e)}")  
 class ColumbiaDiningScraper:
     BASE_URL = 'https://dining.columbia.edu/'
     TIMEOUT = 10
@@ -121,7 +62,9 @@ class ColumbiaDiningScraper:
                 name='John Jay Dining Hall',
                 url='https://dining.columbia.edu/content/john-jay-dining-hall',
                 menus={
-                    'Brunch': {},
+                    'Breakfast': {},
+                    'Brunch':{},
+                    'Lunch': {},
                     'Dinner': {},
                     'Lunch & Dinner': {}
                 }
@@ -132,7 +75,8 @@ class ColumbiaDiningScraper:
                 menus={
                     'Daily': {},
                     'Late Night': {},
-                    'Breakfast': {}
+                    'Breakfast': {},
+                    'Lunch & Dinner': {}
                 }
             ),
             'Ferris Booth Commons': DiningLocation(
@@ -215,7 +159,7 @@ class ColumbiaDiningScraper:
                 EC.presence_of_element_located((by, value))
             )
         except TimeoutException:
-            logger.warning(f"Timeout waiting for element: {value}")
+            print(f"Timeout waiting for element: {value}")
             return None
 
     def _click_view_more(self):
@@ -258,13 +202,9 @@ class ColumbiaDiningScraper:
             self.driver.execute_script("arguments[0].scrollIntoView(true);", view_more_button)
             time.sleep(1)  # Wait after scroll
             
-            # Try different click methods
-            try:
-                view_more_button.click()
-            except Exception as e:
-                print(f"Regular click failed: {e}, trying JavaScript click")
-                self.driver.execute_script("arguments[0].click();", view_more_button)
-            
+            #clicking view more button
+            self.driver.execute_script("arguments[0].click();", view_more_button)
+                
             # Wait for new content to load
             time.sleep(3)
             
@@ -287,7 +227,6 @@ class ColumbiaDiningScraper:
             print("Waiting for page to load...")
             time.sleep(3)  # Initial wait for page load
             
-            # Wait for any dynamic content to load
             try:
                 WebDriverWait(self.driver, 5).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '.dining-location, .retail-location'))
@@ -349,7 +288,7 @@ class ColumbiaDiningScraper:
                             open_time_element = loc.find_element(By.CSS_SELECTOR, '.open-time')
                             open_times = open_time_element.text.strip() if open_time_element else ""
                             
-                            # A location is considered open if it has open times
+                            # A location is considered open for the day if it has open times
                             is_open = bool(open_times)
                             
                             # Update location status
@@ -427,7 +366,7 @@ class ColumbiaDiningScraper:
                             location.menus[meal_type][station_name][menu_item.title] = menu_item
 
                 except TimeoutException:
-                    logger.debug(f"No {meal_type} menu found for {location.name}")
+                    print(f"No {meal_type} menu found for {location.name}")
                     continue
 
         except Exception as e:
@@ -546,7 +485,10 @@ class ColumbiaDiningScraper:
                 "locations": formatted_menu,
                 "closed_locations": self.closed_locations
             }
-            print("Template data", template_data)
+            print("Template data")
+            for key in template_data:
+                print(key,template_data[key])
+
             response = ses.send_templated_email(
                 Source='roy@cudiningnotifications.com',  # Make sure this email is verified in SES
                 Destination={
@@ -568,13 +510,6 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"DNS resolution failed: {e}")
     
-    try:
-        chrome_path = subprocess.check_output("find /opt /usr -name chrome", shell=True).decode()
-        chromedriver_path = subprocess.check_output("find /opt /usr -name chromedriver", shell=True).decode()
-        logger.info(f"Chrome path:\n{chrome_path}")
-        logger.info(f"Chromedriver path:\n{chromedriver_path}")
-    except Exception as e:
-        print(f"Error finding Chrome or Chromedriver: {e}")
     successful_sends=[]
     try:
         
